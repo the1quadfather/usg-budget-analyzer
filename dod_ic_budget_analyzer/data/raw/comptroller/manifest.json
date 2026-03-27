@@ -1,0 +1,198 @@
+[
+  {
+    "local_path": "G:\\My Drive\\Programming\\Python\\USG Budget Analyzer\\dod_ic_budget_analyzer\\data\\raw\\comptroller\\1998\\rdtee\\fy1998_r1.pdf",
+    "filename": "fy1998_r1.pdf",
+    "fiscal_year": 1998,
+    "exhibit_type": "rdtee",
+    "component": "unknown"
+  },
+  {
+    "local_path": "G:\\My Drive\\Programming\\Python\\USG Budget Analyzer\\dod_ic_budget_analyzer\\data\\raw\\comptroller\\2000\\rdtee\\fy2000_r1.pdf",
+    "filename": "fy2000_r1.pdf",
+    "fiscal_year": 2000,
+    "exhibit_type": "rdtee",
+    "component": "unknown"
+  },
+  {
+    "local_path": "G:\\My Drive\\Programming\\Python\\USG Budget Analyzer\\dod_ic_budget_analyzer\\data\\raw\\comptroller\\2001\\rdtee\\fy2001_r1.pdf",
+    "filename": "fy2001_r1.pdf",
+    "fiscal_year": 2001,
+    "exhibit_type": "rdtee",
+    "component": "unknown"
+  },
+  {
+    "local_path": "G:\\My Drive\\Programming\\Python\\USG Budget Analyzer\\dod_ic_budget_analyzer\\data\\raw\\comptroller\\2002\\rdtee\\fy2002_r1.pdf",
+    "filename": "fy2002_r1.pdf",
+    "fiscal_year": 2002,
+    "exhibit_type": "rdtee",
+    "component": "unknown"
+  },
+  {
+    "local_path": "G:\\My Drive\\Programming\\Python\\USG Budget Analyzer\\dod_ic_budget_analyzer\\data\\raw\\comptroller\\2003\\rdtee\\fy2003_r1.pdf",
+    "filename": "fy2003_r1.pdf",
+    "fiscal_year": 2003,
+    "exhibit_type": "rdtee",
+    "component": "unknown"
+  },
+  {
+    "local_path": "G:\\My Drive\\Programming\\Python\\USG Budget Analyzer\\dod_ic_budget_analyzer\\data\\raw\\comptroller\\2004\\rdtee\\fy2004_r1.pdf",
+    "filename": "fy2004_r1.pdf",
+    "fiscal_year": 2004,
+    "exhibit_type": "rdtee",
+    "component": "unknown"
+  },
+  {
+    "local_path": "G:\\My Drive\\Programming\\Python\\USG Budget Analyzer\\dod_ic_budget_analyzer\\data\\raw\\comptroller\\2005\\rdtee\\fy2005_r1.pdf",
+    "filename": "fy2005_r1.pdf",
+    "fiscal_year": 2005,
+    "exhibit_type": "rdtee",
+    "component": "unknown"
+  },
+  {
+    "local_path": "G:\\My Drive\\Programming\\Python\\USG Budget Analyzer\\dod_ic_budget_analyzer\\data\\raw\\comptroller\\2006\\rdtee\\fy2006_r1.pdf",
+    "filename": "fy2006_r1.pdf",
+    "fiscal_year": 2006,
+    "exhibit_type": "rdtee",
+    "component": "unknown"
+  },
+  {
+    "local_path": "G:\\My Drive\\Programming\\Python\\USG Budget Analyzer\\dod_ic_budget_analyzer\\data\\raw\\comptroller\\2007\\rdtee\\fy2007_r1.pdf",
+    "filename": "fy2007_r1.pdf",
+    "fiscal_year": 2007,
+    "exhibit_type": "rdtee",
+    "component": "unknown"
+  },
+  {
+    "local_path": "G:\\My Drive\\Programming\\Python\\USG Budget Analyzer\\dod_ic_budget_analyzer\\data\\raw\\comptroller\\2008\\rdtee\\fy2008_r1.pdf",
+    "filename": "fy2008_r1.pdf",
+    "fiscal_year": 2008,
+    "exhibit_type": "rdtee",
+    "component": "unknown"
+  },
+  {
+    "local_path": "G:\\My Drive\\Programming\\Python\\USG Budget Analyzer\\dod_ic_budget_analyzer\\data\\raw\\comptroller\\2009\\rdtee\\fy2009_r1.pdf",
+    "filename": "fy2009_r1.pdf",
+    "fiscal_year": 2009,
+    "exhibit_type": "rdtee",
+    "component": "unknown"
+  },
+  {
+    "local_path": "G:\\My Drive\\Programming\\Python\\USG Budget Analyzer\\dod_ic_budget_analyzer\\data\\raw\\comptroller\\2010\\rdtee\\fy2010_r1.pdf",
+    "filename": "fy2010_r1.pdf",
+    "fiscal_year": 2010,
+    "exhibit_type": "rdtee",
+    "component": "unknown"
+  },
+  {
+    "local_path": "G:\\My Drive\\Programming\\Python\\USG Budget Analyzer\\dod_ic_budget_analyzer\\data\\raw\\comptroller\\2011\\rdtee\\fy2011_r1.pdf",
+    "filename": "fy2011_r1.pdf",
+    "fiscal_year": 2011,
+    "exhibit_type": "rdtee",
+    "component": "unknown"
+  },
+  {
+    "local_path": "G:\\My Drive\\Programming\\Python\\USG Budget Analyzer\\dod_ic_budget_analyzer\\data\\raw\\comptroller\\2012\\rdtee\\fy2012_r1.pdf",
+    "filename": "fy2012_r1.pdf",
+    "fiscal_year": 2012,
+    "exhibit_type": "rdtee",
+    "component": "unknown"
+  },
+  {
+    "local_path": "G:\\My Drive\\Programming\\Python\\USG Budget Analyzer\\dod_ic_budget_analyzer\\data\\raw\\comptroller\\2013\\rdtee\\fy2013_r1.pdf",
+    "filename": "fy2013_r1.pdf",
+    "fiscal_year": 2013,
+    "exhibit_type": "rdtee",
+    "component": "unknown"
+  },
+  {
+    "local_path": "G:\\My Drive\\Programming\\Python\\USG Budget Analyzer\\dod_ic_budget_analyzer\\data\\raw\\comptroller\\2014\\rdtee\\fy2014_r1a.pdf",
+    "filename": "fy2014_r1a.pdf",
+    "fiscal_year": 2014,
+    "exhibit_type": "rdtee",
+    "component": "unknown"
+  },
+  {
+    "local_path": "G:\\My Drive\\Programming\\Python\\USG Budget Analyzer\\dod_ic_budget_analyzer\\data\\raw\\comptroller\\2015\\rdtee\\fy2015_r1a.pdf",
+    "filename": "fy2015_r1a.pdf",
+    "fiscal_year": 2015,
+    "exhibit_type": "rdtee",
+    "component": "unknown"
+  },
+  {
+    "local_path": "G:\\My Drive\\Programming\\Python\\USG Budget Analyzer\\dod_ic_budget_analyzer\\data\\raw\\comptroller\\2016\\rdtee\\fy2016_r1.pdf",
+    "filename": "fy2016_r1.pdf",
+    "fiscal_year": 2016,
+    "exhibit_type": "rdtee",
+    "component": "unknown"
+  },
+  {
+    "local_path": "G:\\My Drive\\Programming\\Python\\USG Budget Analyzer\\dod_ic_budget_analyzer\\data\\raw\\comptroller\\2017\\rdtee\\fy2017_r1a.pdf",
+    "filename": "fy2017_r1a.pdf",
+    "fiscal_year": 2017,
+    "exhibit_type": "rdtee",
+    "component": "unknown"
+  },
+  {
+    "local_path": "G:\\My Drive\\Programming\\Python\\USG Budget Analyzer\\dod_ic_budget_analyzer\\data\\raw\\comptroller\\2018\\rdtee\\fy2018_r1a.pdf",
+    "filename": "fy2018_r1a.pdf",
+    "fiscal_year": 2018,
+    "exhibit_type": "rdtee",
+    "component": "unknown"
+  },
+  {
+    "local_path": "G:\\My Drive\\Programming\\Python\\USG Budget Analyzer\\dod_ic_budget_analyzer\\data\\raw\\comptroller\\2019\\rdtee\\fy2019_r1.pdf",
+    "filename": "fy2019_r1.pdf",
+    "fiscal_year": 2019,
+    "exhibit_type": "rdtee",
+    "component": "unknown"
+  },
+  {
+    "local_path": "G:\\My Drive\\Programming\\Python\\USG Budget Analyzer\\dod_ic_budget_analyzer\\data\\raw\\comptroller\\2020\\rdtee\\fy2020_r1.pdf",
+    "filename": "fy2020_r1.pdf",
+    "fiscal_year": 2020,
+    "exhibit_type": "rdtee",
+    "component": "unknown"
+  },
+  {
+    "local_path": "G:\\My Drive\\Programming\\Python\\USG Budget Analyzer\\dod_ic_budget_analyzer\\data\\raw\\comptroller\\2021\\rdtee\\fy2021_r1.pdf",
+    "filename": "fy2021_r1.pdf",
+    "fiscal_year": 2021,
+    "exhibit_type": "rdtee",
+    "component": "unknown"
+  },
+  {
+    "local_path": "G:\\My Drive\\Programming\\Python\\USG Budget Analyzer\\dod_ic_budget_analyzer\\data\\raw\\comptroller\\2022\\rdtee\\FY2022_r1.pdf",
+    "filename": "FY2022_r1.pdf",
+    "fiscal_year": 2022,
+    "exhibit_type": "rdtee",
+    "component": "unknown"
+  },
+  {
+    "local_path": "G:\\My Drive\\Programming\\Python\\USG Budget Analyzer\\dod_ic_budget_analyzer\\data\\raw\\comptroller\\2023\\rdtee\\FY2023_r1.pdf",
+    "filename": "FY2023_r1.pdf",
+    "fiscal_year": 2023,
+    "exhibit_type": "rdtee",
+    "component": "unknown"
+  },
+  {
+    "local_path": "G:\\My Drive\\Programming\\Python\\USG Budget Analyzer\\dod_ic_budget_analyzer\\data\\raw\\comptroller\\2024\\rdtee\\FY2024_r1.pdf",
+    "filename": "FY2024_r1.pdf",
+    "fiscal_year": 2024,
+    "exhibit_type": "rdtee",
+    "component": "unknown"
+  },
+  {
+    "local_path": "G:\\My Drive\\Programming\\Python\\USG Budget Analyzer\\dod_ic_budget_analyzer\\data\\raw\\comptroller\\2025\\rdtee\\FY2025_r1.pdf",
+    "filename": "FY2025_r1.pdf",
+    "fiscal_year": 2025,
+    "exhibit_type": "rdtee",
+    "component": "unknown"
+  },
+  {
+    "local_path": "G:\\My Drive\\Programming\\Python\\USG Budget Analyzer\\dod_ic_budget_analyzer\\data\\raw\\comptroller\\2026\\rdtee\\fy2026_r1.pdf",
+    "filename": "fy2026_r1.pdf",
+    "fiscal_year": 2026,
+    "exhibit_type": "rdtee",
+    "component": "unknown"
+  }
+]

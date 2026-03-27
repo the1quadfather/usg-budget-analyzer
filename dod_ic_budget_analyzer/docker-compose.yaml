@@ -1,0 +1,15 @@
+# docker-compose.yaml
+version: '3.8'
+
+services:
+  budget-analyzer:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: dod-budget-analyzer:latest
+    container_name: dod-budget-analyzer
+    ports:
+      - "8501:8501"
+    restart: unless-stopped
+    # No volume mounts — data is baked into the image.
+    # To update data: rebuild the image with `docker compose build --no-cache`

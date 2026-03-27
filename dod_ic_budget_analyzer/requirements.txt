@@ -1,0 +1,15 @@
+polars
+sqlalchemy
+tqdm
+rapidfuzz
+pyarrow>=8.0.0
+pandas
+sentence-transformers
+torch
+torchvision
+torchaudio
+matplotlib
+seaborn
+xlsxwriter
+streamlit
+numpy
