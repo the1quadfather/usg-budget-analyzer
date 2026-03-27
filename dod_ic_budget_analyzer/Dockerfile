@@ -28,6 +28,7 @@ COPY . .
 RUN test -f data/processed/usg_budgets.db || \
     (echo "ERROR: data/processed/usg_budgets.db not found. Run ingest first." && exit 1)
 
+ENV PORT=8501
 EXPOSE 8501
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
