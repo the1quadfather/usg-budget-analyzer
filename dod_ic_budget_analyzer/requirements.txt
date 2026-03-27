@@ -16,7 +16,7 @@ sqlalchemy>=2.0
 # ── NLP & Matching ────────────────────────────────────────────────────────────
 # CPU-only torch — same functionality, ~2GB smaller than full torch
 --extra-index-url https://download.pytorch.org/whl/cpu
-torch>=2.0.0+cpu
+torch==2.3.0+cpu
 # Do NOT include torchvision or torchaudio — not needed for inference
 
 sentence-transformers>=3.0
