@@ -18,14 +18,8 @@ RUN apt-get update && apt-get install -y \
 
 # Install Python dependencies first (layer cache friendly)
 COPY requirements.txt .
+# Cache bust: 2026-03-27
 RUN pip install --no-cache-dir -r requirements.txt
-
-# Pre-download the sentence-transformers model into the image.
-# This avoids a slow HuggingFace download on every cold start.
-RUN python -c "\
-from sentence_transformers import SentenceTransformer; \
-SentenceTransformer('multi-qa-MiniLM-L6-cos-v1'); \
-print('Model cached successfully.')"
 
 # Copy application code and processed data
 COPY . .
