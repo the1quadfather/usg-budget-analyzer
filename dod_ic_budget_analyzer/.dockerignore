@@ -1,0 +1,36 @@
+# .dockerignore — optimised for Railway 4GB image limit
+
+# Raw source PDFs (large, not needed at runtime)
+data/raw/
+
+# Processed parquet files — data is already in usg_budgets.db
+data/processed/*.parquet
+
+# Embedding cache — rebuilt on first run, stored in Railway's ephemeral fs
+# Excluding saves ~300MB from the image. Cold start will recompute once (~5s
+# from cached DB, not 100 minutes — embeddings recompute from the DB quickly)
+data/processed/embeddings/
+
+# Git
+.git/
+.gitignore
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+.pytest_cache/
+
+# Dev / test artifacts
+*.md
+test_*.py
+*.ipynb
+.ipynb_checkpoints/
+logs/
+
+# OS
+.DS_Store
+Thumbs.db
