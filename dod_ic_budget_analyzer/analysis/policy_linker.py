@@ -66,7 +66,14 @@ logger = logging.getLogger(__name__)
 # ── Config ────────────────────────────────────────────────────────────────────
 
 _HERE = Path(__file__).parent.parent
-EMBEDDING_CACHE_DIR = _HERE / "data" / "processed" / "embeddings"
+
+# Use /tmp on cloud platforms (writable ephemeral storage).
+# Fall back to local data/processed/embeddings/ for development.
+_local_cache = _HERE / "data" / "processed" / "embeddings"
+EMBEDDING_CACHE_DIR = (
+    _local_cache if _local_cache.exists() or not Path("/tmp").exists()
+    else Path("/tmp/embeddings")
+)
 EMBEDDING_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 DEFAULT_MODEL = "multi-qa-MiniLM-L6-cos-v1"
