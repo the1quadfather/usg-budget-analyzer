@@ -1,183 +1,206 @@
 """
 matching/semantic_matcher.py
 
-Dense vector semantic matcher for DoD Program Elements.
+Implements dense vector semantic matching using SentenceTransformers.
+Projects DoD Program Elements into a vector space to capture conceptual
+alignment beyond pure lexical overlap.
 
-Key improvements over original:
-  - Returns top-N candidates (not just the single best match)
-  - Includes PE number and agency in results for disambiguation
-  - Skips classified PEs (no meaningful title to embed)
-  - Preprocesses both corpus and queries for better embedding alignment
+Robustness measures:
+  - Corpus documents are agency-contextualized ("Defense Research Sciences
+    [Army]") so identical titles under different agencies embed apart.
+  - Embeddings are cached to disk keyed by a corpus+model hash - the app no
+    longer re-encodes ~2,000 names on every process start.
+  - Classified aggregate rows are excluded from the corpus.
+  - Top-k retrieval so the linker can detect ambiguous matches.
 """
 
+import hashlib
 import logging
-from dataclasses import dataclass
-from typing import Optional
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple
 
 import torch
 from sentence_transformers import SentenceTransformer, util
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from matching.preprocessor import QueryPreprocessor
 from storage.db import ProgramElement
+
+import sys
+sys.path.insert(0, str(Path(__file__).parent.parent))
+import config
 
 logger = logging.getLogger(__name__)
 
 
-# ── Result type ───────────────────────────────────────────────────────────────
-
-@dataclass
-class SemanticMatch:
-    pe_id: int
-    pe_number: str
-    program_name: str
-    agency: str
-    budget_activity: Optional[str]
-    score: float        # cosine similarity 0.0-1.0
-
-
-# ── Matcher ───────────────────────────────────────────────────────────────────
-
 class SemanticMatcher:
     """
-    Dense embedding semantic matcher using SentenceTransformers.
-
-    Encodes all PE titles at init time into a normalized tensor matrix.
-    At query time encodes the query and performs cosine similarity search.
-
-    Example:
-        with SessionFactory() as session:
-            matcher = SemanticMatcher(session)
-            results = matcher.find_top_matches("hypersonic glide vehicle", top_n=5)
+    In-memory semantic matching engine utilizing dense embeddings for
+    high-fidelity mapping of unstructured text to Program Elements.
     """
 
-    DEFAULT_MODEL = "multi-qa-MiniLM-L6-cos-v1"
-
-    def __init__(self, session: Session, model_name: str = DEFAULT_MODEL):
+    def __init__(
+        self,
+        session: Session,
+        model_name: str = "multi-qa-MiniLM-L6-cos-v1",
+        cache_dir: Path | None = None,
+    ):
         self.session = session
-        self.preprocessor = QueryPreprocessor()
+        self.model_name = model_name
+        self.cache_dir = Path(cache_dir) if cache_dir else config.PROCESSED_DIR
 
         self.device = (
             "cuda" if torch.cuda.is_available()
             else "mps" if torch.backends.mps.is_available()
             else "cpu"
         )
-        logger.info(f"SemanticMatcher device: {self.device}")
+        logger.info(f"Initializing SemanticMatcher on device: {self.device}")
 
         self.model = SentenceTransformer(model_name, device=self.device)
 
-        self._pe_ids: list[int] = []
-        self._pe_numbers: list[str] = []
-        self._pe_names: list[str] = []
-        self._pe_agencies: list[str] = []
-        self._pe_bas: list[str] = []
+        self._pe_ids: List[int] = []
+        self._pe_meta: Dict[int, dict] = {}
+        self._corpus_docs: List[str] = []
         self._corpus_embeddings: Optional[torch.Tensor] = None
 
         self._build_vector_space()
 
-    # ── Build ─────────────────────────────────────────────────────────────────
+    # ── Corpus construction ───────────────────────────────────────────────────
 
-    def _build_vector_space(self) -> None:
-        """Load PEs and compute the corpus embedding matrix."""
+    def _load_narratives(self) -> dict:
+        """(pe_number, agency) -> R-2 mission description, when ingested."""
+        try:
+            from storage.db import PENarrative
+            rows = self.session.execute(
+                select(PENarrative.pe_number, PENarrative.agency,
+                       PENarrative.description)
+                .where(PENarrative.project_number == "")
+                .order_by(PENarrative.fiscal_year)   # latest year wins below
+            ).all()
+            return {(r.pe_number, r.agency): r.description for r in rows}
+        except Exception as e:
+            logger.info(f"No R-2 narratives available for corpus ({e})")
+            return {}
+
+    def _load_corpus(self) -> None:
+        narratives = self._load_narratives()
         stmt = select(
             ProgramElement.id,
-            ProgramElement.pe_number,
             ProgramElement.program_name,
+            ProgramElement.pe_number,
             ProgramElement.agency,
-            ProgramElement.budget_activity,
-        ).where(ProgramElement.is_classified == False)  # noqa: E712
-
-        rows = self.session.execute(stmt).all()
-
-        texts_to_encode: list[str] = []
-        for pe_id, pe_num, name, agency, ba in rows:
-            if not name:
-                continue
-            # Preprocess titles for better embedding quality
-            processed = self.preprocessor.process(name)
-            embed_text = processed.expanded or name
-
+        )
+        for pe_id, name, pe_number, agency in self.session.execute(stmt).all():
+            if not name or not (pe_number or "").strip():
+                continue  # classified aggregates / placeholder rows
             self._pe_ids.append(pe_id)
-            self._pe_numbers.append(pe_num or "")
-            self._pe_names.append(name)
-            self._pe_agencies.append(agency or "")
-            self._pe_bas.append(ba or "")
-            texts_to_encode.append(embed_text)
+            self._pe_meta[pe_id] = {
+                "name": name, "pe_number": pe_number, "agency": agency,
+            }
+            # Mission-description snippet sharpens the embedding well beyond
+            # what a bare title carries (the model truncates long docs, so a
+            # bounded prefix is all it can use anyway).
+            snippet = narratives.get((pe_number, agency), "")[:400]
+            doc = f"{name} [{agency}]"
+            if snippet:
+                doc = f"{doc}. {snippet}"
+            self._corpus_docs.append(doc)
 
-        logger.info(f"Encoding {len(texts_to_encode):,} PE titles ...")
+    def _cache_path(self) -> Path:
+        safe_model = self.model_name.replace("/", "_")
+        return self.cache_dir / f"semantic_embeddings_{safe_model}.pt"
+
+    def _corpus_hash(self) -> str:
+        payload = self.model_name + "\n" + "\n".join(self._corpus_docs)
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+    def _build_vector_space(self) -> None:
+        """
+        Loads the corpus, then restores embeddings from the disk cache when the
+        corpus is unchanged; otherwise encodes and refreshes the cache.
+        """
+        self._load_corpus()
+        if not self._corpus_docs:
+            logger.warning("Semantic corpus is empty - matcher disabled.")
+            return
+
+        corpus_hash = self._corpus_hash()
+        cache_path = self._cache_path()
+
+        if cache_path.exists():
+            try:
+                cached = torch.load(cache_path, map_location=self.device)
+                if (cached.get("hash") == corpus_hash
+                        and cached["embeddings"].shape[0] == len(self._corpus_docs)):
+                    self._corpus_embeddings = cached["embeddings"]
+                    logger.info(
+                        f"Loaded {len(self._corpus_docs)} cached embeddings "
+                        f"from {cache_path.name}"
+                    )
+                    return
+                logger.info("Embedding cache stale (corpus changed) - re-encoding.")
+            except Exception as e:
+                logger.warning(f"Embedding cache unreadable ({e}) - re-encoding.")
+
+        logger.info(f"Encoding {len(self._corpus_docs)} Program Elements...")
         self._corpus_embeddings = self.model.encode(
-            texts_to_encode,
+            self._corpus_docs,
             convert_to_tensor=True,
             normalize_embeddings=True,
-            show_progress_bar=len(texts_to_encode) > 500,
         )
-        logger.info("Semantic vector space ready.")
+        try:
+            torch.save(
+                {"hash": corpus_hash, "embeddings": self._corpus_embeddings.cpu()},
+                cache_path,
+            )
+            logger.info(f"Embedding cache written -> {cache_path}")
+        except Exception as e:
+            logger.warning(f"Could not write embedding cache: {e}")
 
-    # ── Match ─────────────────────────────────────────────────────────────────
+    # ── Retrieval ─────────────────────────────────────────────────────────────
 
-    def find_top_matches(
-        self,
-        query: str,
-        top_n: int = 5,
-        threshold: float = 0.35,
-    ) -> list[SemanticMatch]:
+    def find_matches(
+        self, query: str, limit: int = 5, threshold: float = 0.40
+    ) -> List[dict]:
         """
-        Find the top-N semantically similar PEs for a query.
-
-        Args:
-            query:     raw query string
-            top_n:     number of candidates to return
-            threshold: minimum cosine similarity to include (0.0-1.0)
-
-        Returns:
-            List of SemanticMatch sorted by score descending.
+        Top-k semantic candidates above the cosine-similarity threshold.
         """
         if self._corpus_embeddings is None or not query.strip():
             return []
 
-        processed = self.preprocessor.process(query)
-        embed_query = processed.expanded or processed.normalized or query
-
         query_embedding = self.model.encode(
-            embed_query,
-            convert_to_tensor=True,
-            normalize_embeddings=True,
+            query, convert_to_tensor=True, normalize_embeddings=True
         )
-
         cos_scores = util.cos_sim(query_embedding, self._corpus_embeddings)[0]
 
-        # Get top-N indices above threshold
-        top_results = torch.topk(cos_scores, k=min(top_n, len(self._pe_ids)))
+        k = min(limit, cos_scores.shape[0])
+        top_scores, top_idx = torch.topk(cos_scores, k=k)
 
-        matches: list[SemanticMatch] = []
-        for score_tensor, idx_tensor in zip(top_results.values, top_results.indices):
-            score = score_tensor.item()
-            idx = idx_tensor.item()
+        candidates = []
+        for score, idx in zip(top_scores.tolist(), top_idx.tolist()):
             if score < threshold:
-                break
-            matches.append(SemanticMatch(
-                pe_id=self._pe_ids[idx],
-                pe_number=self._pe_numbers[idx],
-                program_name=self._pe_names[idx],
-                agency=self._pe_agencies[idx],
-                budget_activity=self._pe_bas[idx],
-                score=round(score, 4),
-            ))
-
-        return matches
+                continue
+            pe_id = self._pe_ids[idx]
+            meta = self._pe_meta[pe_id]
+            candidates.append({
+                "pe_id": pe_id,
+                "name": meta["name"],
+                "pe_number": meta["pe_number"],
+                "agency": meta["agency"],
+                "score": round(score, 4),
+                "strategy": "SEMANTIC",
+            })
+        return candidates
 
     def find_best_match(
-        self,
-        query: str,
-        threshold: float = 0.45,
-    ) -> Optional[tuple[int, str, float]]:
+        self, query: str, threshold: float = 0.50
+    ) -> Optional[Tuple[int, str, float]]:
         """
-        Compatibility shim returning (pe_id, name, score) for the top match.
-        Used by program_linker waterfall pipeline.
+        Backward-compatible single-best lookup.
+        Returns (pe_id, canonical_name, cosine_score) or None.
         """
-        results = self.find_top_matches(query, top_n=1, threshold=threshold)
-        if results:
-            r = results[0]
-            return (r.pe_id, r.program_name, r.score)
+        matches = self.find_matches(query, limit=1, threshold=threshold)
+        if matches:
+            m = matches[0]
+            return (m["pe_id"], m["name"], m["score"])
         return None

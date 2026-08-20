@@ -1,203 +1,159 @@
-# DoD RDT&E Budget Analyzer
+# DoD Budget Explorer
 
-A tool for cross-referencing unclassified U.S. Department of Defense budget documents with formal policy language — answering the question: **did funding actually follow stated strategic priorities?**
+Trace a US defense program from **what was asked for**, to **what Congress
+provided**, to **what the money did**, to **what officials said about it** —
+in one local tool.
 
-🔗 **[Live Demo](https://usg-budget-analyzer-production.up.railway.app/)** ← replace with your Railway URL
+The explorer ingests official machine-readable budget data (R-1 exhibits,
+R-2 justification books), links it to execution data (USAspending.gov), and
+layers optional AI enrichment (Gemini with web grounding) for open-source
+context. Everything runs locally against a SQLite database.
 
----
+## What it does
 
-## What It Does
+| Tab | Question it answers |
+|---|---|
+| **Budget Trends** | How has RDT&E funding moved by component, FY1998–FY2027? Who got paid from each appropriation account? |
+| **Program Finder** | Which budget program is this name / news quote / PE number? Then a full profile: funding history, official plans & reported work, contract awards, recent coverage |
+| **Rhetoric vs. Budget** | Did the money follow the talk? AI-characterized public emphasis correlated against the funding trajectory, with a lead-aware alignment coefficient |
+| **Data Coverage** | What's ingested, what's live-queried, and the known blind spots |
 
-The DoD publishes two kinds of documents that rarely get read together:
-
-- **R-1 Budget Justification Books** — line-item RDT&E funding requests for every Program Element (PE), by service, going back to 1998
-- **Policy documents** — National Defense Strategies (NDS), National Security Strategies (NSS), and National Defense Authorization Acts (NDAA) that describe strategic priorities in narrative form
-
-This tool parses both, embeds them into a shared semantic space, and surfaces the connections — and the gaps — between what was said and what was funded.
-
-### Example outputs
-
-**"Did hypersonics funding follow NDS 2022 priorities?"**
-
-| Program | Agency | FY2020 | FY2021 | FY2022 | FY2023 | FY2024 | FY2025 | Trend |
-|---|---|---|---|---|---|---|---|---|
-| Hypersonics | Army | $228M | $801M | $301M | $173M | $238M | $43M | ↓ DOWN |
-| Hypersonic Defense | Defense-Wide | $131M | $390M | $248M | $225M | $518M | $182M | ↑ UP |
-| Hypersonics Prototyping (HACM) | Air Force | $0 | $0 | $0 | $145M | $423M | $517M | ↑ UP |
-| Hypersonics EMD | Army | $0 | $0 | $0 | $633M | $633M | $538M | ↑ UP |
-
-**"What policy language covers LTAMDS (0604114A)?"**
-
-- NDAA FY2020 — direct funding limitation on the Lower Tier Air and Missile Defense Sensor
-- NDS 2022 — sensor network language motivating the program requirement
-- NDAA FY2023/2024/2025 — procurement authorization trail showing the funding ramp
-
----
-
-## Features
-
-- **Program Linker** — match any program name, acronym (`LTAMDS`, `FTUAS`, `M-SHORAD`), or PE number to the budget line and see its full funding history
-- **Policy Gap Analysis** — enter a strategic topic, see which programs address it, and whether funding went up or down after the policy was published
-- **PE → Policy** — for any program element, surface the NDAA sections and NDS/NSS passages that reference it
-- **NDS Priority Mapping** — map every section of a National Defense Strategy to its closest-matched budget programs
-- **Macro Trends** — agency-level RDT&E funding trajectories from FY2006–FY2026
-- **PE Explorer** — browse and filter all 2,100+ program elements by agency and budget activity
-
----
+Program matching is multi-stage: exact PE-number lookup, lexical matching
+over titles/acronyms/project names, and semantic embeddings enriched with
+official mission descriptions — with honest ambiguity flagging when several
+programs share a name (joint programs usually do).
 
 ## Architecture
 
-```
-Data Sources
-├── DoD Comptroller (R-1 PDFs, FY1998–FY2026)      ← manual download
-├── GovInfo.gov (NDAA enrolled bills, FY2005–FY2025) ← automated
-├── defense.gov (NDS 2014, 2018, 2022)               ← manual download
-└── whitehouse.gov archives (NSS 2010–2025)          ← automated
-
-Parsing Layer
-├── r1_parser.py          PDF → structured PE records (pdftotext + regex)
-├── policy_parser.py      PDF → semantic chunks (section-aware for NDAA,
-│                         paragraph-grouped for NDS/NSS)
-└── ingest_r1.py          Parquet → SQLite (FundingLines unpivoted PY/CY/BY)
-
-Storage
-└── SQLite (usg_budgets.db)
-    ├── program_elements   ~2,100 unique PEs
-    ├── funding_lines      ~52,000 rows (one per PE × FY × funding type)
-    ├── policy_documents   14 documents
-    └── policy_chunks      ~12,000 semantic chunks
-
-Matching Pipeline (4-stage waterfall)
-├── Stage 0: PE number exact lookup
-├── Stage 1: Acronym index (parenthetical acronyms from PE titles)
-├── Stage 2: RapidFuzz lexical matching
-└── Stage 3: SentenceTransformer semantic similarity (multi-qa-MiniLM-L6-cos-v1)
-
-Policy Analysis
-└── policy_linker.py      Cosine similarity between chunk embeddings and PE corpus
-                          Gap analysis: funding trajectory vs policy publication year
-
-App
-└── Streamlit (app.py)    4-tab interface, deployed via Docker on Railway
+```mermaid
+flowchart LR
+    subgraph Sources
+        A[comptroller.war.gov<br/>R-1 XLSX + R-2 XML]
+        B[USAspending.gov API]
+        C[Gemini + web search<br/>optional]
+    end
+    subgraph Pipeline
+        D[acquisition/] --> E[parsing/]
+        E --> F[(SQLite<br/>usg_budgets.db)]
+    end
+    subgraph App
+        G[matching/<br/>fuzzy + semantic]
+        H[analysis/<br/>trends, alignment, awards]
+        I[Streamlit UI]
+    end
+    A --> D
+    F --> G --> I
+    F --> H --> I
+    B --> H
+    C --> H
 ```
 
----
+## Quickstart (local)
 
-## Data Coverage
-
-| Source | Coverage |
-|---|---|
-| R-1 RDT&E budgets | FY1998–FY2026 (28 years) |
-| NDAA | FY2020–FY2025 |
-| National Defense Strategy | 2014, 2018, 2022 |
-| National Security Strategy | 2010, 2015, 2017, 2022, 2025 |
-
-All data is **unclassified and publicly available** from official U.S. government sources.
-
----
-
-## Tech Stack
-
-| Layer | Technology |
-|---|---|
-| Language | Python 3.12 |
-| PDF extraction | pdfplumber, pdftotext (Poppler) |
-| Data processing | Pandas, Polars, PyArrow |
-| Storage | SQLite + SQLAlchemy 2.0 |
-| Fuzzy matching | RapidFuzz |
-| Semantic matching | SentenceTransformers (`multi-qa-MiniLM-L6-cos-v1`) |
-| App framework | Streamlit |
-| Containerisation | Docker |
-| Hosting | Railway |
-| Document acquisition | httpx, BeautifulSoup4 |
-
----
-
-## Local Setup
-
-**Prerequisites:** Python 3.12+, Docker, [Poppler](https://github.com/oschwartz10612/poppler-windows/releases/) (for `pdftotext`)
+Requires Python 3.12+.
 
 ```bash
-# Clone
-git clone https://github.com/YOUR_USERNAME/usg-budget-analyzer.git
-cd usg-budget-analyzer
-
-# Install dependencies
-pip install -r dod_ic_budget_analyzer/requirements.txt
-
-# Download R-1 PDFs manually from:
-# https://comptroller.defense.gov/Budget-Materials/
-# Place in: dod_ic_budget_analyzer/data/raw/comptroller/{FY}/rdtee/
-
-# Parse R-1 data
-python dod_ic_budget_analyzer/parsing/r1_parser.py --manifest
-
-# Ingest into SQLite
-python dod_ic_budget_analyzer/storage/ingest_r1.py --reset --summary \
-  --db "sqlite:///dod_ic_budget_analyzer/data/processed/usg_budgets.db" \
-  --parquet "dod_ic_budget_analyzer/data/processed/r1_all_years.parquet"
-
-# Download policy documents
-python dod_ic_budget_analyzer/acquisition/policy_scraper.py --all
-
-# Parse policy documents
-python dod_ic_budget_analyzer/parsing/policy_parser.py --all \
-  --db "sqlite:///dod_ic_budget_analyzer/data/processed/usg_budgets.db"
-
-# Run the app
-streamlit run dod_ic_budget_analyzer/app.py
+cd dod_ic_budget_analyzer
+pip install -r requirements.txt
+streamlit run app.py
 ```
 
-**Or with Docker:**
+The repository ships with the processed database (FY1998–FY2027 R-1 funding,
+PB2026–PB2027 Defense-Wide narratives), so the app is useful immediately.
+The first Program Finder search downloads the sentence-transformer model
+(one time, ~90MB).
+
+### Optional: AI features
+
+Set a Gemini API key to enable ambiguity resolution, "In the News," and the
+Rhetoric vs. Budget tab:
 
 ```bash
-docker compose -f dod_ic_budget_analyzer/docker-compose.yaml up
-# Open http://localhost:8501
+setx GEMINI_API_KEY "your-key"     # Windows; export on Linux/macOS
 ```
 
----
+**Keys are per-user and never live in this repository.** The app reads
+`GEMINI_API_KEY` (or `GOOGLE_API_KEY`) from the environment only — there is
+no key file, config entry, or Docker build argument for it, and `.env` files
+are gitignored as a guardrail. Don't commit credentials in any form.
 
-## Project Structure
+## Quickstart (Docker)
+
+```bash
+cd dod_ic_budget_analyzer
+docker compose up --build
+```
+
+Then open http://localhost:8501. The compose file mounts `./data` (database
+persists outside the container), passes `GEMINI_API_KEY` through from your
+environment, and caches the embedding model in a named volume.
+
+## Updating the data
+
+New budget cycle? Three commands:
+
+```bash
+# 1. Official R-1 spreadsheet (machine-readable, FY2012+)
+python acquisition/comptroller_scraper.py --xlsx --years 2028 --exhibits rdtee
+
+# 2. Parse and save
+python parsing/xlsx_ingest.py --file data/raw/comptroller/2028/rdtee/fy2028_r1.xlsx --save
+
+# 3. R-2 justification books (Defense-Wide XML) + ingest
+python acquisition/r2_downloader.py --years 2028 --ingest
+```
+
+Then ingest the new parquet into SQLite with `storage/ingest_r1.py` (see the
+notebook in `notebooks/` for the pattern). Matching quality is guarded by a
+golden-set eval — run it after any matcher change:
+
+```bash
+python analysis/linker_eval.py
+```
+
+`data/raw/` is not tracked (≈55MB of re-downloadable PDFs/XLSX/XML); the
+pipeline above rebuilds it. Pre-FY2012 years came from parsed PDFs and are
+already in the shipped database.
+
+## Data sources & honesty notes
+
+- **R-1 exhibits** (comptroller.war.gov): official XLSX for FY2012–FY2027,
+  parsed PDFs for FY1998–FY2011. Discretionary and reconciliation/mandatory
+  funds are kept as separate streams.
+- **R-2 justification books**: official DTIC-schema XML, published from the
+  PB2026 cycle onward, Defense-Wide components only (the services publish
+  PDF-only). Mission descriptions, projects, and per-year accomplishment
+  line items with funding.
+- **USAspending.gov**: live queries. Public award records carry **no
+  program-element linkage**, so program-level award search is keyword
+  matching — the UI labels it "leads, not a ledger." Other Transactions
+  aren't a searchable instrument group; DoD awards post with a ~90-day
+  delay; umbrella vehicles (PIAs, IDIQs) hide task detail in generic prime
+  descriptions (a subaward search partially compensates).
+- **AI enrichment**: clearly labeled as AI estimates. The Rhetoric vs.
+  Budget signal is an LLM characterization grounded in web search, not a
+  media-analytics count; its alignment coefficient is a Spearman rank
+  correlation at 0–2-year funding leads and refuses to compute on fewer
+  than 4 overlapping years.
+
+## Project layout
 
 ```
 dod_ic_budget_analyzer/
-├── acquisition/
-│   ├── comptroller_scraper.py   R-1 PDF discovery and local ingestion
-│   ├── policy_scraper.py        NDAA/NDS/NSS document downloader
-│   └── usaspending_client.py    USASpending.gov API client
-├── parsing/
-│   ├── r1_parser.py             R-1 PDF → structured PE records
-│   └── policy_parser.py        Policy PDFs → semantic chunks
-├── matching/
-│   ├── preprocessor.py          Query normalisation + acronym expansion
-│   ├── acronym_index.py         PE title acronym index (O(1) lookup)
-│   ├── fuzzy_matcher.py         RapidFuzz top-N matching
-│   ├── semantic_matcher.py      SentenceTransformer top-N matching
-│   └── program_linker.py        4-stage waterfall pipeline
-├── analysis/
-│   ├── trend_tracker.py         Agency and PE funding trajectories
-│   ├── gap_analyzer.py          Budget vs stated priorities
-│   └── policy_linker.py        Policy chunk ↔ PE cross-reference
-├── storage/
-│   ├── db.py                    SQLAlchemy schema
-│   └── ingest_r1.py             R-1 parquet → SQLite ETL
-├── app.py                       Streamlit interface
-├── config.py                    Paths, agency codes, fiscal years
-├── Dockerfile
-└── docker-compose.yaml
+├── acquisition/     # downloaders: comptroller XLSX/PDF, R-2 XML, USAspending
+├── parsing/         # R-1 XLSX/PDF parsers, R-2 jbook XML parser
+├── storage/         # SQLAlchemy schema + ingest pipelines
+├── matching/        # normalizer, fuzzy matcher, semantic matcher
+├── analysis/        # trends, program linker, awards, rhetoric alignment, eval
+├── data/processed/  # SQLite DB, parquet, embedding cache (tracked)
+├── data/raw/        # source documents (not tracked; rebuildable)
+└── app.py           # Streamlit UI
 ```
 
----
+## Roadmap
 
-## Limitations & Known Issues
-
-- **FY1998–FY2005 R-1 PDFs** extract very few records — the pre-2006 column layout differs from later years and hasn't been fully addressed
-- **Classified programs** (PE number `999999999`) are tracked by count but contain no title or funding detail by design
-- **NDAA matching quality** is moderate for abstract policy concepts — the semantic gap between legislative language and PE titles is real and expected
-- **Railway free tier** sleeps after inactivity; first load after sleep takes ~60 seconds
-
----
-
-## License
-
-MIT
+- Service R-2 narratives (Army/Navy/AF publish PDF-only — needs extraction)
+- Re-base FY2012–FY2026 funding on official XLSX end to end
+- Enacted-vs-request deltas from appropriations Joint Explanatory Statements
+- IC topline (NIP/MIP) tracking
+- UI polish pass

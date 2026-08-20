@@ -1,18 +1,24 @@
 """
 acquisition/comptroller_scraper.py
 
-Handles DoD budget justification documents from comptroller.defense.gov.
+Handles DoD budget justification documents from comptroller.war.gov
+(formerly comptroller.defense.gov — the old domain 403s automated clients
+after the Department of War rename).
 
-PRIMARY MODE — Local ingestion (recommended):
-    The comptroller site blocks automated access. The practical workflow is:
-      1. Visit https://comptroller.defense.gov/Budget-Materials/ in your browser
-      2. Navigate to the fiscal year you want
-      3. Download the RDT&E justification book PDFs/ZIPs for the components you need
-      4. Place them in:  data/raw/comptroller/{FY}/{exhibit_type}/
+PRIMARY MODE — Official XLSX exhibits (FY2012+, recommended):
+    The comptroller publishes machine-readable summary exhibits
+    (r1_display.xlsx, p1_display.xlsx, ...) at predictable URLs. Download
+    them directly — no HTML scraping, no OCR:
+      python acquisition/comptroller_scraper.py --xlsx --years 2027 --exhibits rdtee
+
+SECONDARY MODE — Local ingestion (for pre-2012 PDFs or manual downloads):
+      1. Visit https://comptroller.war.gov/Budget-Materials/ in your browser
+      2. Navigate to the fiscal year you want and download the documents
+      3. Place them in:  data/raw/comptroller/{FY}/{exhibit_type}/
          e.g.           data/raw/comptroller/2025/rdtee/army_r2.pdf
-      5. Run --local to build a manifest for the parser
+      4. Run --local to build a manifest for the parser
 
-SECONDARY MODE — Remote scrape (may 403 depending on site posture):
+TERTIARY MODE — Remote HTML scrape (may 403 depending on site posture):
     python acquisition/comptroller_scraper.py --remote --years 2025 --exhibits rdtee
 
 Usage (local scan):
@@ -102,10 +108,10 @@ class LocalIngestor:
     from the path and filename where possible, otherwise marked "unknown".
     """
 
-    SUPPORTED_EXTENSIONS = {".pdf", ".zip"}
+    SUPPORTED_EXTENSIONS = {".pdf", ".zip", ".xlsx"}
 
     EXHIBIT_PATTERNS = {
-        "rdtee":       re.compile(r"r-?2|rdtee|rdte", re.IGNORECASE),
+        "rdtee":       re.compile(r"r-?[12]|rdtee|rdte", re.IGNORECASE),
         "procurement": re.compile(r"p-?40|procurement", re.IGNORECASE),
         "om":          re.compile(r"o-?1|o&m|oper", re.IGNORECASE),
     }
@@ -320,6 +326,87 @@ class ComptrollerDownloader:
         return succeeded, failed
 
 
+# ── Official XLSX Exhibit Downloader ─────────────────────────────────────────
+
+class XlsxExhibitDownloader:
+    """
+    Downloads the comptroller's official machine-readable summary exhibits
+    (r1_display.xlsx, p1_display.xlsx, ...) from their predictable URLs.
+
+    Verified available for FY2012-FY2027 (R-1); earlier years are PDF-only.
+    Files land in the same tree the LocalIngestor scans:
+        data/raw/comptroller/{FY}/{exhibit_type}/fy{FY}_{stem}.xlsx
+    """
+
+    def __init__(self, client: httpx.Client | None = None,
+                 base_dir: Path = config.COMPTROLLER_DIR):
+        self.client = client or _make_client()
+        self.base_dir = base_dir
+
+    def download(self, fiscal_year: int, exhibit_type: str = "rdtee",
+                 overwrite: bool = False) -> Path | None:
+        stem = config.XLSX_EXHIBIT_STEMS.get(exhibit_type)
+        if stem is None:
+            logger.error(f"No xlsx stem known for exhibit type '{exhibit_type}'")
+            return None
+        if fiscal_year < config.XLSX_FIRST_FY:
+            logger.warning(
+                f"FY{fiscal_year} predates machine-readable exhibits "
+                f"(first: FY{config.XLSX_FIRST_FY}) - use the PDF workflow"
+            )
+            return None
+
+        url = config.COMPTROLLER_XLSX_URL.format(year=fiscal_year, stem=stem)
+        short = stem.replace("_display", "")
+        dest_dir = self.base_dir / str(fiscal_year) / exhibit_type
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        dest_path = dest_dir / f"fy{fiscal_year}_{short}.xlsx"
+
+        if dest_path.exists() and not overwrite:
+            logger.info(f"Skipping (exists): {dest_path}")
+            return dest_path
+
+        logger.info(f"Downloading {url}")
+        for attempt in range(config.HTTP_RETRY_ATTEMPTS):
+            try:
+                resp = self.client.get(
+                    url,
+                    headers={"Referer": config.COMPTROLLER_BUDGET_URL.format(year=fiscal_year)},
+                )
+                resp.raise_for_status()
+                content_type = resp.headers.get("content-type", "")
+                if "spreadsheet" not in content_type and "excel" not in content_type:
+                    logger.warning(f"Unexpected content-type '{content_type}' - saving anyway")
+                dest_path.write_bytes(resp.content)
+                logger.info(f"  -> {dest_path} ({len(resp.content):,} bytes)")
+                return dest_path
+            except httpx.HTTPStatusError as e:
+                logger.warning(f"HTTP {e.response.status_code} attempt {attempt + 1}")
+                if e.response.status_code == 404:
+                    break
+                _backoff_sleep(attempt)
+            except httpx.RequestError as e:
+                logger.warning(f"Request error attempt {attempt + 1}: {e}")
+                _backoff_sleep(attempt)
+
+        logger.error(f"Failed to download: {url}")
+        return None
+
+    def download_years(self, fiscal_years: list[int],
+                       exhibit_types: list[str] | None = None,
+                       delay: float = 1.0) -> list[Path]:
+        exhibit_types = exhibit_types or ["rdtee"]
+        downloaded = []
+        for fy in fiscal_years:
+            for et in exhibit_types:
+                path = self.download(fy, et)
+                if path:
+                    downloaded.append(path)
+                time.sleep(delay)
+        logger.info(f"XLSX downloads complete: {len(downloaded)} file(s)")
+        return downloaded
+
+
 # ── Orchestrator ──────────────────────────────────────────────────────────────
 
 class ComptrollerScraper:
@@ -401,12 +488,16 @@ if __name__ == "__main__":
     )
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument(
+        "--xlsx", action="store_true",
+        help="Download official machine-readable exhibits (FY2012+, recommended)"
+    )
+    mode.add_argument(
         "--local", action="store_true",
-        help="Scan locally downloaded files (recommended)"
+        help="Scan locally downloaded files"
     )
     mode.add_argument(
         "--remote", action="store_true",
-        help="Attempt to scrape comptroller.defense.gov"
+        help="Attempt to scrape comptroller.war.gov HTML pages"
     )
     parser.add_argument("--years", nargs="+", type=int, default=config.FISCAL_YEARS)
     parser.add_argument(
@@ -428,7 +519,19 @@ if __name__ == "__main__":
 
     scraper = ComptrollerScraper()
 
-    if args.local:
+    if args.xlsx:
+        downloader = XlsxExhibitDownloader()
+        paths = downloader.download_years(
+            fiscal_years=args.years,
+            exhibit_types=args.exhibits,
+            delay=args.delay,
+        )
+        print(f"\n{'='*60}")
+        print(f"Downloaded/present: {len(paths)} xlsx exhibit(s)")
+        for p in paths:
+            print(f"  {p}")
+
+    elif args.local:
         manifest = scraper.scan_local(
             fiscal_years=args.years,
             exhibit_types=args.exhibits,
@@ -438,7 +541,7 @@ if __name__ == "__main__":
         if not manifest:
             print("\nNo documents found.")
             print("Download PDFs manually from:")
-            print("  https://comptroller.defense.gov/Budget-Materials/")
+            print("  https://comptroller.war.gov/Budget-Materials/")
             print(f"Place them in: {config.COMPTROLLER_DIR}/{{FY}}/{{exhibit_type}}/")
             print("Example:       data/raw/comptroller/2025/rdtee/army_r2.pdf")
         else:

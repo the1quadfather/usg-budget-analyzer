@@ -1,15 +1,18 @@
-# docker-compose.yaml
-version: '3.8'
-
 services:
-  budget-analyzer:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    image: dod-budget-analyzer:latest
-    container_name: dod-budget-analyzer
+  budget-explorer:
+    build: .
+    container_name: dod-budget-explorer
     ports:
       - "8501:8501"
+    environment:
+      # Optional — enables AI features when set in the host environment
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+    volumes:
+      # SQLite DB + parquet live outside the container and survive rebuilds
+      - ./data:/app/data
+      # Sentence-transformer model cache (downloaded once)
+      - hf-cache:/app/.hf-cache
     restart: unless-stopped
-    # No volume mounts — data is baked into the image.
-    # To update data: rebuild the image with `docker compose build --no-cache`
+
+volumes:
+  hf-cache:

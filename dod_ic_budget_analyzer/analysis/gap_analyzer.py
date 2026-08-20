@@ -14,6 +14,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from storage.db import FundingLine, ProgramElement
+from analysis.trend_tracker import TrendTracker
 
 logger = logging.getLogger(__name__)
 
@@ -38,25 +39,30 @@ class GapAnalyzer:
                 select(
                     ProgramElement.id.label("pe_id"),
                     FundingLine.fiscal_year,
+                    FundingLine.funding_type,
                     FundingLine.amount_thousands
                 )
                 .join(FundingLine, ProgramElement.id == FundingLine.program_element_id)
                 .where(ProgramElement.id.in_(pe_ids))
             )
-            
+
             results = self.session.execute(stmt).all()
-            
+
             if not results:
                 return pl.DataFrame()
-                
+
             # FIX: Enforce strict Polars datatypes at the I/O boundary
             schema = {
                 "pe_id": pl.Int64,
                 "fiscal_year": pl.Int64,
+                "funding_type": pl.Utf8,
                 "amount_thousands": pl.Float64
             }
-            
-            return pl.DataFrame(results, schema=schema, orient="row")
+
+            df = pl.DataFrame(results, schema=schema, orient="row")
+            # One figure per (PE, FY) - actuals beat enacted/CY beat requests.
+            # Summing across funding types double/triple-counts each year.
+            return TrendTracker._prefer_funding_type(df, keys=["pe_id"])
             
         except Exception as e:
             logger.error(f"Failed to fetch funding data: {e}")

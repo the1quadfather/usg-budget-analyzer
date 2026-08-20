@@ -501,6 +501,14 @@ class R1Parser:
         if fiscal_year is None:
             fiscal_year = self._infer_fy(pdf_path)
 
+        # Official machine-readable exhibits (FY2012+) bypass PDF/OCR entirely.
+        if pdf_path.suffix.lower() in (".xlsx", ".xls"):
+            try:
+                from parsing.xlsx_ingest import R1XlsxParser
+            except ImportError:
+                from xlsx_ingest import R1XlsxParser
+            return R1XlsxParser().parse(pdf_path, fiscal_year=fiscal_year)
+
         logger.info(f"Parsing {pdf_path.name} (FY{fiscal_year})")
 
         if is_native_pdf(pdf_path):
@@ -649,7 +657,10 @@ class R1Parser:
             if col not in df.columns:
                 df[col] = pd.NA
 
-        return df[OUTPUT_COLUMNS].reset_index(drop=True)
+        # Keep extras (organization, mandatory-stream amounts from the xlsx
+        # path) after the standard columns.
+        extras = [c for c in df.columns if c not in OUTPUT_COLUMNS]
+        return df[OUTPUT_COLUMNS + extras].reset_index(drop=True)
 
 
 # ── CLI ───────────────────────────────────────────────────────────────────────

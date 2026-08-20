@@ -1,873 +1,923 @@
 """
 app.py
 
-DoD RDT&E Budget Analyzer — Streamlit Interface
+Streamlit interface for the DoD Budget Explorer.
 
-Tabs:
-  1. Program Linker    — match short names/acronyms to PE records + funding trends
-  2. Macro Trends      — agency-level funding trajectories over time
-  3. PE Explorer       — search and browse individual program elements
-  4. Policy Alignment  — NDAA/NDS vs. actual budget (coming soon)
+Information architecture: three tabs organized around analyst questions,
+not data sources.
+  Budget Trends    - topline RDT&E by component, plus account-level
+                     "who got paid" drill-down
+  Program Finder   - search -> program profile (Funding / Plans & Work /
+                     Contracts & Awards / In the News)
+  Data Coverage    - what's ingested, what's live-queried, known blind spots
+
+Interaction rule: anything from the local database renders immediately;
+external, slow-or-billable calls (USAspending.gov, AI) sit behind buttons
+labeled with their source.
 """
 
-import sys
+import altair as alt
+import pandas as pd
+import streamlit as st
+import polars as pl
 from pathlib import Path
 
-import matplotlib.pyplot as plt
-import matplotlib.ticker as mticker
-import polars as pl
-import streamlit as st
-
-sys.path.insert(0, str(Path(__file__).parent))
-
+from storage.db import get_engine, get_session_factory
+from matching.fuzzy_matcher import ProgramMatcher
+from analysis.program_linker import ProgramLinker
 from analysis.trend_tracker import TrendTracker
-from analysis.policy_linker import PolicyLinker
-from storage.db import FundingLine, ProgramElement, get_engine, get_session_factory, init_db
-from sqlalchemy import select
 
-# ── Page config ───────────────────────────────────────────────────────────────
+# --- Configuration & State Setup ---
+st.set_page_config(page_title="DoD Budget Explorer", layout="wide")
 
-st.set_page_config(
-    page_title="DoD RDT&E Budget Analyzer",
-    page_icon="🇺🇸",
-    layout="wide",
-    initial_sidebar_state="collapsed",
-)
+# Anchor the DB path to this file so the app works from any working directory
+DB_PATH = f"sqlite:///{(Path(__file__).parent / 'data' / 'processed' / 'usg_budgets.db').as_posix()}"
 
-# ── Colour palette ────────────────────────────────────────────────────────────
-
-PALETTE = {
-    "Army":          "#4c7a34",
-    "Navy":          "#1f4e79",
-    "Air Force":     "#1b6ca8",
-    "Space Force":   "#7030a0",
-    "Defense-Wide":  "#c55a11",
-    "OT&E":          "#767171",
-    "Unknown":       "#a6a6a6",
-}
-DEFAULT_COLOUR = "#2e75b6"
-
-# ── Custom CSS ────────────────────────────────────────────────────────────────
-
-st.markdown("""
-<style>
-.block-container { padding-top: 1.5rem; }
-
-.match-card {
-    background: #f8f9fa;
-    border-left: 4px solid #1f4e79;
-    border-radius: 4px;
-    padding: 0.75rem 1rem;
-    margin-bottom: 0.5rem;
-}
-.match-card-top { border-left-color: #4c7a34; }
-.match-card-alt { border-left-color: #c55a11; opacity: 0.85; }
-
-.badge-high   { background:#e6f4ea; color:#1e7e34; padding:2px 8px;
-                border-radius:10px; font-size:0.78rem; font-weight:600; }
-.badge-medium { background:#fff8e1; color:#856404; padding:2px 8px;
-                border-radius:10px; font-size:0.78rem; font-weight:600; }
-.badge-low    { background:#fdecea; color:#b71c1c; padding:2px 8px;
-                border-radius:10px; font-size:0.78rem; font-weight:600; }
-.badge-exact  { background:#e8eaf6; color:#283593; padding:2px 8px;
-                border-radius:10px; font-size:0.78rem; font-weight:600; }
-
-.stage-pill {
-    background:#e3f2fd; color:#0d47a1;
-    padding:2px 8px; border-radius:10px;
-    font-size:0.75rem; font-family:monospace;
-}
-
-div[data-testid="metric-container"] {
-    background:#f8f9fa;
-    border:1px solid #e9ecef;
-    border-radius:6px;
-    padding:0.5rem 0.75rem;
-}
-</style>
-""", unsafe_allow_html=True)
-
-# ── DB path ───────────────────────────────────────────────────────────────────
-
-_HERE = Path(__file__).parent
-DB_URI = f"sqlite:///{_HERE}/data/processed/usg_budgets.db"
-
-
-# ── Cached resources ──────────────────────────────────────────────────────────
-
-@st.cache_resource(show_spinner=False)
-def _get_session_factory():
-    engine = get_engine(DB_URI)
-    init_db(engine)
+@st.cache_resource
+def init_db_connection():
+    engine = get_engine(DB_PATH)
     return get_session_factory(engine)
 
-
-SessionFactory = _get_session_factory()
-
-
-@st.cache_resource(show_spinner=False)
-def _get_policy_linker():
-    """Load the PolicyLinker (embeds 12k chunks + 2k PEs — uses cache on disk)."""
-    with SessionFactory() as session:
-        return PolicyLinker(session)
-
-
-@st.cache_resource(show_spinner=False)
-def _get_linker():
+@st.cache_resource
+def load_matching_models():
     """
-    Load the full matching pipeline.
-    Cached after first call — subsequent searches are instant.
-    The semantic model (~90MB) takes ~20s to encode on first load.
+    Builds the linker once per process. Loaded lazily (first search), and
+    degrades to lexical-only matching if the PyTorch stack is unavailable.
     """
-    from matching.program_linker import ProgramLinker
+    SessionFactory = init_db_connection()
     with SessionFactory() as session:
-        return ProgramLinker(
-            session,
-            fuzzy_threshold=55.0,
-            semantic_threshold=0.35,
-            top_n=5,
-            load_semantic=True,
-        )
-
-
-# ── Shared helpers ────────────────────────────────────────────────────────────
-
-def _get_pe_funding_long(pe_id: int) -> pl.DataFrame:
-    with SessionFactory() as session:
-        rows = session.execute(
-            select(
-                FundingLine.fiscal_year,
-                FundingLine.funding_type,
-                FundingLine.amount_thousands,
-            )
-            .where(FundingLine.program_element_id == pe_id)
-            .order_by(FundingLine.fiscal_year)
-        ).all()
-    if not rows:
-        return pl.DataFrame()
-    return pl.DataFrame(rows, schema={
-        "fiscal_year":      pl.Int64,
-        "funding_type":     pl.Utf8,
-        "amount_thousands": pl.Float64,
-    }, orient="row")
-
-
-def _get_pe_funding_wide(pe_id: int) -> pl.DataFrame:
-    df = _get_pe_funding_long(pe_id)
-    if df.is_empty():
-        return df
-    return df.pivot(
-        index="funding_type",
-        columns="fiscal_year",
-        values="amount_thousands",
-        aggregate_function="sum",
-    ).fill_null(0.0)
-
-
-def _plot_pe_trend(pe_id: int, program_name: str, agency: str) -> None:
-    """Bar chart of BY Request funding across all fiscal years for one PE."""
-    df = _get_pe_funding_long(pe_id)
-    if df.is_empty():
-        st.info("No funding data available.")
-        return
-
-    df_by = df.filter(pl.col("funding_type") == "BY Request").sort("fiscal_year")
-    if df_by.is_empty():
-        st.info("No Budget Year request data available.")
-        return
-
-    years   = df_by["fiscal_year"].to_list()
-    amounts = [v / 1_000 for v in df_by["amount_thousands"].to_list()]  # $K -> $M
-    colour  = PALETTE.get(agency, DEFAULT_COLOUR)
-
-    fig, ax = plt.subplots(figsize=(11, 3.2))
-    fig.patch.set_facecolor("#fafafa")
-    ax.set_facecolor("#fafafa")
-
-    bars = ax.bar(years, amounts, color=colour, alpha=0.82, width=0.6, zorder=3)
-    ax.plot(years, amounts, color=colour, linewidth=1.6,
-            marker="o", markersize=4, zorder=4)
-
-    max_val = max(amounts) if amounts else 1
-    for bar, val in zip(bars, amounts):
-        if val > 0:
-            ax.text(
-                bar.get_x() + bar.get_width() / 2,
-                bar.get_height() + max_val * 0.02,
-                f"${val:,.0f}M",
-                ha="center", va="bottom", fontsize=7.5, color="#333",
-            )
-
-    title = program_name[:70] + ("…" if len(program_name) > 70 else "")
-    ax.set_title(title, fontsize=10, pad=8, loc="left")
-    ax.set_ylabel("$M (BY Request)", fontsize=9)
-    ax.yaxis.set_major_formatter(mticker.FuncFormatter(lambda x, _: f"${x:,.0f}M"))
-    ax.xaxis.set_major_locator(mticker.MaxNLocator(integer=True, nbins=len(years)))
-    ax.tick_params(axis="x", rotation=45, labelsize=8)
-    ax.tick_params(axis="y", labelsize=8)
-    ax.grid(axis="y", color="#e0e0e0", linewidth=0.8, zorder=0)
-    ax.spines[["top", "right"]].set_visible(False)
-    plt.tight_layout()
-    st.pyplot(fig)
-    plt.close(fig)
-
-
-def _badge_html(score: float, stage: str) -> str:
-    if stage == "PE_NUMBER":
-        return '<span class="badge-exact">🔢 Exact PE#</span>'
-    if score >= 0.90:
-        return f'<span class="badge-high">🟢 High {score:.0%}</span>'
-    if score >= 0.65:
-        return f'<span class="badge-medium">🟡 Medium {score:.0%}</span>'
-    return f'<span class="badge-low">🟠 Low {score:.0%}</span>'
-
-
-def _stage_html(stage: str) -> str:
-    return f'<span class="stage-pill">{stage}</span>'
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# HEADER
-# ══════════════════════════════════════════════════════════════════════════════
-
-st.title("🇺🇸 DoD RDT&E Budget Analyzer")
-st.caption("FY1998–2026  ·  Unclassified R-1 Data  ·  Amounts in $K unless noted")
-st.divider()
-
-tab_linker, tab_trends, tab_explorer, tab_policy = st.tabs([
-    "🔍  Program Linker",
-    "📈  Macro Trends",
-    "🗂  PE Explorer",
-    "📄  Policy Alignment",
-])
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# TAB 1 — Program Linker
-# ══════════════════════════════════════════════════════════════════════════════
-
-with tab_linker:
-    st.subheader("Program Linker")
-    st.markdown(
-        "Enter a program name, acronym, or PE number from a press release or article. "
-        "The first search loads the AI model (~20 seconds). Searches after that are instant."
-    )
-
-    col_q, col_btn = st.columns([5, 1])
-    with col_q:
-        query = st.text_input(
-            "query",
-            placeholder="e.g.  LTAMDS  ·  future vertical lift  ·  0604114A  ·  hypersonics",
-            label_visibility="collapsed",
-            key="linker_query",
-        )
-    with col_btn:
-        search_clicked = st.button("Search", type="primary", use_container_width=True)
-
-    if search_clicked and query.strip():
-        # Show loading message on first search only
-        status_slot = st.empty()
-        if "linker_loaded" not in st.session_state:
-            status_slot.info("⏳ Loading AI matching model for the first time — ~20 seconds…")
-
-        linker = _get_linker()
-        st.session_state["linker_loaded"] = True
-        status_slot.empty()
-
-        with st.spinner("Searching…"):
-            result = linker.link(query.strip())
-
-        if not result.matched:
+        fuzzy = ProgramMatcher(session)
+        semantic = None
+        try:
+            from matching.semantic_matcher import SemanticMatcher
+            semantic = SemanticMatcher(session)
+        except Exception as e:
             st.warning(
-                "No match found above the confidence threshold. "
-                "Try a different name, acronym, or PE number."
+                f"Semantic matching unavailable ({type(e).__name__}) — "
+                "running name-similarity matching only."
             )
-        else:
-            top = result.candidates[0]
-
-            # ── Top match card ─────────────────────────────────────────────
-            st.markdown(
-                f"""
-                <div class="match-card match-card-top">
-                    <div style="font-size:1.05rem;font-weight:600;margin-bottom:4px;">
-                        {top.program_name}
-                    </div>
-                    <div style="font-size:0.85rem;color:#555;
-                                display:flex;gap:12px;flex-wrap:wrap;">
-                        <span>📋 <b>{top.pe_number}</b></span>
-                        <span>🏛 {top.agency}</span>
-                        <span>{top.budget_activity or ''}</span>
-                        <span>{_badge_html(top.score, result.match_stage)}</span>
-                        <span>via {_stage_html(result.match_stage)}</span>
-                    </div>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
-
-            # ── Metrics row ────────────────────────────────────────────────
-            df_long = _get_pe_funding_long(top.pe_id)
-            if not df_long.is_empty():
-                df_by = df_long.filter(pl.col("funding_type") == "BY Request")
-                if not df_by.is_empty():
-                    latest_fy  = int(df_by["fiscal_year"].max())
-                    earliest_fy = int(df_by["fiscal_year"].min())
-                    latest_amt  = df_by.filter(
-                        pl.col("fiscal_year") == latest_fy
-                    )["amount_thousands"].sum()
-                    earliest_amt = df_by.filter(
-                        pl.col("fiscal_year") == earliest_fy
-                    )["amount_thousands"].sum()
-                    n_yrs  = latest_fy - earliest_fy
-                    delta  = (latest_amt - earliest_amt) / earliest_amt * 100 \
-                             if earliest_amt > 0 else 0.0
-                    cagr   = ((latest_amt / earliest_amt) ** (1 / n_yrs) - 1) * 100 \
-                             if n_yrs > 0 and earliest_amt > 0 else 0.0
-
-                    m1, m2, m3, m4 = st.columns(4)
-                    m1.metric(f"FY{latest_fy} BY Request",
-                              f"${latest_amt/1_000:,.1f}M")
-                    m2.metric(f"FY{earliest_fy} BY Request",
-                              f"${earliest_amt/1_000:,.1f}M")
-                    m3.metric(f"Total Change ({earliest_fy}→{latest_fy})",
-                              f"{delta:+.1f}%", delta=f"{delta:+.1f}%")
-                    m4.metric("CAGR", f"{cagr:+.1f}%/yr")
-
-            # ── Trend chart ────────────────────────────────────────────────
-            _plot_pe_trend(top.pe_id, top.program_name, top.agency)
-
-            # ── Full funding table ─────────────────────────────────────────
-            with st.expander("📊 Full funding detail (PY / CY / BY by year)"):
-                df_wide = _get_pe_funding_wide(top.pe_id)
-                if not df_wide.is_empty():
-                    st.dataframe(df_wide.to_pandas(), use_container_width=True)
-                    st.caption(
-                        "PY Actual = prior year actuals  ·  "
-                        "CY Request = current year enacted/request  ·  "
-                        "BY Request = budget year request  ·  Amounts in $K"
-                    )
-
-            # ── Alternatives ───────────────────────────────────────────────
-            if len(result.candidates) > 1:
-                with st.expander(
-                    f"🔀 {len(result.candidates) - 1} alternative candidate(s)"
-                ):
-                    for i, c in enumerate(result.candidates[1:], start=2):
-                        st.markdown(
-                            f"""
-                            <div class="match-card match-card-alt">
-                                <div style="font-size:0.95rem;font-weight:600;">
-                                    {i}. {c.program_name}
-                                </div>
-                                <div style="font-size:0.82rem;color:#666;
-                                            display:flex;gap:10px;flex-wrap:wrap;">
-                                    <span>📋 <b>{c.pe_number}</b></span>
-                                    <span>🏛 {c.agency}</span>
-                                    <span>{_badge_html(c.score, c.match_stage)}</span>
-                                    <span>{c.match_detail}</span>
-                                </div>
-                            </div>
-                            """,
-                            unsafe_allow_html=True,
-                        )
-                        if st.button("View funding →", key=f"alt_{c.pe_id}"):
-                            st.session_state["alt_pe_id"]    = c.pe_id
-                            st.session_state["alt_pe_name"]  = c.program_name
-                            st.session_state["alt_pe_agency"] = c.agency
-
-            if "alt_pe_id" in st.session_state:
-                st.divider()
-                st.markdown(f"**Funding: {st.session_state['alt_pe_name']}**")
-                _plot_pe_trend(
-                    st.session_state["alt_pe_id"],
-                    st.session_state["alt_pe_name"],
-                    st.session_state.get("alt_pe_agency", ""),
-                )
-
-    # ── Batch mode ─────────────────────────────────────────────────────────────
-    st.divider()
-    with st.expander("📋 Batch mode — link multiple programs at once"):
-        batch_input = st.text_area(
-            "One program name, acronym, or PE number per line",
-            height=130,
-            placeholder="LTAMDS\nfuture vertical lift\nhypersonics\n0604114A",
+        linker = ProgramLinker(
+            fuzzy, semantic, fuzzy_threshold=80.0, semantic_threshold=0.45
         )
-        col_run, col_dl = st.columns([2, 1])
-        run_batch = col_run.button("▶ Run batch match", type="primary")
+    return linker
 
-        if run_batch and batch_input.strip():
-            queries_b = [q.strip() for q in batch_input.splitlines() if q.strip()]
-            slot2 = st.empty()
-            if "linker_loaded" not in st.session_state:
-                slot2.info("⏳ Loading AI model — ~20 seconds…")
-            linker = _get_linker()
-            st.session_state["linker_loaded"] = True
-            slot2.empty()
+@st.cache_resource
+def get_enricher():
+    """AI enrichment client, or None when no SDK/API key is configured."""
+    try:
+        from analysis import oss_enricher
+        if oss_enricher.available():
+            return oss_enricher.GeminiEnricher()
+    except Exception:
+        pass
+    return None
 
-            with st.spinner(f"Linking {len(queries_b)} queries…"):
-                df_batch = linker.link_batch(queries_b)
-            st.session_state["batch_results"] = df_batch
+# --- Cached external lookups (USAspending.gov) ---
 
-        if "batch_results" in st.session_state:
-            df_b   = st.session_state["batch_results"]
-            df_top = df_b.filter(pl.col("rank") == 1)
-            st.dataframe(
-                df_top.select([
-                    "query", "match_stage", "pe_number",
-                    "program_name", "agency", "score",
-                ]).to_pandas(),
-                use_container_width=True, height=300,
-            )
-            csv_b = df_b.to_pandas().to_csv(index=False)
-            col_dl.download_button(
-                "⬇️ Download CSV",
-                data=csv_b,
-                file_name="batch_match_results.csv",
-                mime="text/csv",
-            )
+@st.cache_data(ttl=3600, show_spinner=False)
+def fetch_program_awards(program_name: str, agency: str, fy: int,
+                         query_text: str) -> pd.DataFrame:
+    from analysis.spending_explorer import SpendingExplorer
+    ex = SpendingExplorer()
+    try:
+        return ex.program_awards(program_name, agency, fy, fy,
+                                 query_text=query_text)
+    finally:
+        ex.close()
 
+@st.cache_data(ttl=3600, show_spinner=False)
+def fetch_program_subawards(program_name: str, fy: int,
+                            query_text: str) -> pd.DataFrame:
+    from analysis.spending_explorer import SpendingExplorer
+    ex = SpendingExplorer()
+    try:
+        return ex.program_subawards(program_name, fy - 1, fy,
+                                    query_text=query_text)
+    finally:
+        ex.close()
 
-# ══════════════════════════════════════════════════════════════════════════════
-# TAB 2 — Macro Trends
-# ══════════════════════════════════════════════════════════════════════════════
+@st.cache_data(ttl=3600, show_spinner=False)
+def fetch_account_breakdown(agency: str, fy: int, category: str) -> pd.DataFrame:
+    from analysis.spending_explorer import SpendingExplorer
+    ex = SpendingExplorer()
+    try:
+        return ex.account_breakdown(agency, fy, category=category)
+    finally:
+        ex.close()
 
-with tab_trends:
-    st.subheader("Agency Funding Trends")
+@st.cache_data(ttl=600, show_spinner=False)
+def fetch_agency_trends(start_yr: int, end_yr: int) -> pd.DataFrame:
+    SessionFactory = init_db_connection()
+    with SessionFactory() as session:
+        df = TrendTracker(session).get_agency_trends(start_yr, end_yr)
+    return df.to_pandas() if not df.is_empty() else pd.DataFrame()
 
-    col1, col2 = st.columns(2)
-    start_yr = col1.slider("Start Year", 2006, 2024, 2015)
-    end_yr   = col2.slider("End Year",   2007, 2026, 2026)
-    agencies_sel = st.multiselect(
-        "Agencies to display",
-        ["Army", "Navy", "Air Force", "Defense-Wide", "Space Force"],
-        default=["Army", "Navy", "Air Force", "Defense-Wide"],
+@st.cache_data(ttl=3600, show_spinner=False)
+def fetch_coverage_stats() -> dict:
+    from sqlalchemy import text
+    stats = {}
+    engine = get_engine(DB_PATH)
+    with engine.connect() as c:
+        for key, q in {
+            "funding_lines": "SELECT COUNT(*) FROM funding_lines",
+            "fy_min": "SELECT MIN(fiscal_year) FROM funding_lines",
+            "fy_max": "SELECT MAX(fiscal_year) FROM funding_lines",
+            "programs": "SELECT COUNT(*) FROM program_elements",
+            "narrative_pes": "SELECT COUNT(DISTINCT pe_number) FROM pe_narratives",
+            "narratives": "SELECT COUNT(*) FROM pe_narratives",
+            "accomplishments": "SELECT COUNT(*) FROM pe_accomplishments",
+        }.items():
+            try:
+                stats[key] = c.execute(text(q)).scalar() or 0
+            except Exception:
+                stats[key] = 0
+    return stats
+
+# --- Chart styling (validated reference palette) ---
+
+BASIS_COLORS = alt.Scale(
+    domain=["Actual", "Enacted/CY", "Request"],
+    range=["#2a78d6", "#1baf7a", "#eb6834"],
+)
+STRATEGY_LABELS = {
+    "FUZZY": "Name similarity",
+    "SEMANTIC": "Meaning (AI)",
+    "ACRONYM": "Acronym",
+    "PE_NUMBER": "PE number",
+}
+STRATEGY_COLORS = alt.Scale(
+    domain=list(STRATEGY_LABELS.values()),
+    range=["#2a78d6", "#eb6834", "#1baf7a", "#eda100"],
+)
+AGENCY_COLORS = alt.Scale(
+    domain=["Air Force", "Army", "Defense-Wide", "Navy", "Space Force", "OT&E"],
+    range=["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300"],
+)
+
+def money_bar(df: pd.DataFrame, name_col: str) -> alt.Chart:
+    """Single-hue horizontal bars for $ magnitude by category."""
+    d = df.copy()
+    d["amount_m"] = d["amount"] / 1e6
+    return (
+        alt.Chart(d)
+        .mark_bar(color="#2a78d6", cornerRadiusEnd=3)
+        .encode(
+            x=alt.X("amount_m:Q", title="$ Millions obligated"),
+            y=alt.Y(f"{name_col}:N", sort="-x", title=None),
+            tooltip=[alt.Tooltip(f"{name_col}:N", title="Name"),
+                     alt.Tooltip("amount_m:Q", format=",.1f", title="$M")],
+        )
+        .properties(height=max(30 * len(d) + 30, 120))
     )
 
-    if st.button("Generate Trends", type="primary"):
-        with st.spinner("Calculating…"):
-            with SessionFactory() as session:
-                tracker = TrendTracker(session)
-                df_trends = tracker.get_agency_trends(start_yr, end_yr)
+EXECUTION_FYS = list(range(2018, 2027))
 
-        if df_trends.is_empty():
-            st.warning("No data found for the selected range.")
-        else:
-            df_f = df_trends.filter(pl.col("agency").is_in(agencies_sel)) \
-                   if agencies_sel else df_trends
+SessionFactory = init_db_connection()
 
-            year_cols = sorted(
-                [c for c in df_f.columns if c.isdigit()], key=int
+# --- UI Layout ---
+st.title("🇺🇸 DoD Budget Explorer")
+
+tab_trends, tab_finder, tab_rhetoric, tab_coverage = st.tabs(
+    ["Budget Trends", "Program Finder", "Rhetoric vs. Budget", "Data Coverage"]
+)
+
+# ═══════════════════════════════ Budget Trends ═══════════════════════════════
+with tab_trends:
+    st.header("RDT&E topline by component")
+    col1, col2 = st.columns(2)
+    start_yr = col1.slider("Start Year", 1998, 2026, 2010)
+    end_yr = col2.slider("End Year", 1999, 2027, 2027)
+
+    df_trends = fetch_agency_trends(start_yr, end_yr)
+    if df_trends.empty:
+        st.info("No funding data for that year range.")
+    else:
+        year_cols = [c for c in df_trends.columns if c.isdigit()]
+        long = df_trends.melt(
+            id_vars=["agency"], value_vars=year_cols,
+            var_name="fiscal_year", value_name="amount_k",
+        )
+        long["amount_b"] = long["amount_k"] / 1e6
+        long["fiscal_year"] = long["fiscal_year"].astype(int)
+        long = long[long["amount_b"] > 0]
+
+        trend_chart = (
+            alt.Chart(long)
+            .mark_line(strokeWidth=2, point=alt.OverlayMarkDef(filled=True, size=45))
+            .encode(
+                x=alt.X("fiscal_year:O", title="Fiscal Year"),
+                y=alt.Y("amount_b:Q", title="$ Billions"),
+                color=alt.Color("agency:N", scale=AGENCY_COLORS, title="Component"),
+                tooltip=[
+                    alt.Tooltip("agency:N", title="Component"),
+                    alt.Tooltip("fiscal_year:O", title="FY"),
+                    alt.Tooltip("amount_b:Q", format=",.1f", title="$B"),
+                ],
             )
-            df_pd = df_f.to_pandas()
+            .properties(height=340)
+        )
+        st.altair_chart(trend_chart, use_container_width=True)
+        st.caption(
+            "Each year shows its most reliable figure: reported actuals, then "
+            "enacted, then the budget request. Discretionary only — "
+            "reconciliation/mandatory funds are tracked separately."
+        )
+        with st.expander("Data table"):
+            st.dataframe(df_trends, use_container_width=True, hide_index=True)
 
-            if not df_pd.empty and year_cols:
-                fig, ax = plt.subplots(figsize=(13, 5))
-                fig.patch.set_facecolor("#fafafa")
-                ax.set_facecolor("#fafafa")
+    st.divider()
+    st.subheader("Who got paid — account-level obligations")
+    st.markdown(
+        "Actual contract obligations from each component's RDT&E "
+        "appropriation account."
+    )
+    from analysis.spending_explorer import RDTE_ACCOUNTS
 
-                for _, row in df_pd.iterrows():
-                    agency = row["agency"]
-                    vals   = [row.get(y, 0) / 1_000 for y in year_cols]
-                    colour = PALETTE.get(agency, DEFAULT_COLOUR)
-                    ax.plot(
-                        [int(y) for y in year_cols], vals,
-                        marker="o", markersize=4, linewidth=2,
-                        color=colour, label=agency, zorder=3,
+    c1, c2, c3 = st.columns([1.2, 1, 1])
+    exec_comp = c1.selectbox("Component", list(RDTE_ACCOUNTS.keys()))
+    exec_fy = c2.selectbox("Fiscal year", EXECUTION_FYS,
+                           index=EXECUTION_FYS.index(2025))
+    exec_dim = c3.selectbox("Break down by", ["recipient", "industry", "state"])
+
+    breakdown_key = f"breakdown::{exec_comp}::{exec_fy}::{exec_dim}"
+    if st.button("Look up obligations (USAspending.gov)"):
+        with st.spinner("Querying USAspending.gov..."):
+            st.session_state[breakdown_key] = fetch_account_breakdown(
+                exec_comp, exec_fy, exec_dim
+            )
+    breakdown = st.session_state.get(breakdown_key)
+    if breakdown is not None:
+        if breakdown.empty:
+            st.info("No obligation data returned for this selection.")
+        else:
+            st.altair_chart(money_bar(breakdown, "name"), use_container_width=True)
+            st.caption(
+                f"Top {len(breakdown)} by contract obligations, "
+                f"{exec_comp} RDT&E account, FY{exec_fy}. DoD awards post "
+                "with a ~90-day delay; the current fiscal year is partial."
+            )
+
+# ═══════════════════════════════ Program Finder ══════════════════════════════
+with tab_finder:
+    st.header("Find a program")
+    query = st.text_input(
+        "Search — program name, quote from an article, or PE number",
+        placeholder='e.g. "launched effects", DARPA Tactical Technology, 0602345A',
+    )
+
+    if query:
+        with st.spinner("Searching programs..."):
+            linker = load_matching_models()
+            result = linker.link_query(query)
+
+        if not result["matched_pe_id"]:
+            st.warning(
+                "No program match. Try the program's common name, a quote "
+                "that names it, or its PE number (e.g. 0602345A)."
+            )
+        else:
+            enricher = get_enricher()
+            candidates = result["candidates"]
+
+            if result["needs_review"]:
+                st.warning(
+                    f'Several programs match "{query}" — pick the right one '
+                    "below, or use the AI resolver."
+                )
+            else:
+                strat = STRATEGY_LABELS.get(result["match_strategy"],
+                                            result["match_strategy"])
+                st.success(
+                    f"**{result['matched_name']}** — PE {result['pe_number']} "
+                    f"({result['agency']}) · matched by {strat} · confidence "
+                    f"{result['confidence_score'] * 100:.0f}%"
+                )
+
+            # --- AI resolution of ambiguous candidate sets ---
+            adj_key = f"adjudication::{query}"
+            adjudication = st.session_state.get(adj_key)
+            if enricher and result["needs_review"] and adjudication is None:
+                if st.button("Resolve ambiguous match (AI)"):
+                    with st.spinner("Comparing candidates..."):
+                        st.session_state[adj_key] = (
+                            enricher.adjudicate(query, candidates)
+                            or {"no_match": True,
+                                "rationale": "The resolver call failed — see logs.",
+                                "confidence": 0.0, "pe_number": "", "agency": ""}
+                        )
+                    st.rerun()
+            if adjudication:
+                if adjudication.get("no_match"):
+                    st.info(f"**AI assessment:** no confident pick. "
+                            f"{adjudication['rationale']}")
+                else:
+                    st.info(
+                        f"**AI assessment:** PE {adjudication['pe_number']} "
+                        f"({adjudication['agency']}) · confidence "
+                        f"{adjudication['confidence'] * 100:.0f}%\n\n"
+                        f"{adjudication['rationale']}"
                     )
 
-                ax.set_title(
-                    f"RDT&E BY Request by Component (FY{start_yr}–FY{end_yr})",
-                    fontsize=11, pad=10, loc="left",
-                )
-                ax.set_ylabel("$M", fontsize=9)
-                ax.yaxis.set_major_formatter(
-                    mticker.FuncFormatter(lambda x, _: f"${x:,.0f}M")
-                )
-                ax.xaxis.set_major_locator(mticker.MaxNLocator(integer=True))
-                ax.tick_params(axis="x", rotation=45, labelsize=8)
-                ax.tick_params(axis="y", labelsize=8)
-                ax.grid(axis="y", color="#e0e0e0", linewidth=0.8, zorder=0)
-                ax.spines[["top", "right"]].set_visible(False)
-                ax.legend(loc="upper left", bbox_to_anchor=(1.01, 1),
-                          fontsize=9, frameon=False)
-                plt.tight_layout()
-                st.pyplot(fig)
-                plt.close(fig)
+            # --- Candidate selector ---
+            labels = [
+                f"PE {c['pe_number']} — {c['name'][:50]} [{c['agency']}]"
+                for c in candidates
+            ]
+            default_idx = 0
+            if adjudication and not adjudication.get("no_match"):
+                for i, c in enumerate(candidates):
+                    if c["pe_number"] == adjudication["pe_number"]:
+                        default_idx = i
+                        break
+            if len(candidates) > 1:
+                chosen_label = st.selectbox("Viewing:", labels, index=default_idx)
+                sel = candidates[labels.index(chosen_label)]
 
-                # ── Period summary metrics ─────────────────────────────────
-                mcols = st.columns(len(df_pd))
-                last_col  = year_cols[-1]
-                first_col = year_cols[0]
-                for ci, (_, row) in enumerate(df_pd.iterrows()):
-                    latest   = row.get(last_col, 0) / 1_000
-                    earliest = row.get(first_col, 0) / 1_000
-                    delta    = (latest - earliest) / earliest * 100 \
-                               if earliest > 0 else 0.0
-                    mcols[ci].metric(
-                        row["agency"], f"${latest:,.0f}M", f"{delta:+.1f}%"
-                    )
-
-            with st.expander("📊 Full data table + download"):
-                display_cols = (
-                    ["agency"]
-                    + [c for c in df_f.columns if c.isdigit()]
-                    + ["total_delta_pct", "cagr_pct"]
+                cand_df = pd.DataFrame([
+                    {"label": lbl, "confidence": c["score"],
+                     "matched_by": STRATEGY_LABELS.get(c["strategy"], c["strategy"])}
+                    for lbl, c in zip(labels, candidates)
+                ])
+                bars = alt.Chart(cand_df).mark_bar(cornerRadiusEnd=3).encode(
+                    x=alt.X("confidence:Q", scale=alt.Scale(domain=[0, 1]),
+                            title="Match confidence"),
+                    y=alt.Y("label:N", sort="-x", title=None),
+                    color=alt.Color("matched_by:N", scale=STRATEGY_COLORS,
+                                    title="How it matched"),
+                    tooltip=["label:N", "matched_by:N",
+                             alt.Tooltip("confidence:Q", format=".2f")],
                 )
-                display_cols = [c for c in display_cols if c in df_f.columns]
-                st.dataframe(
-                    df_f.select(display_cols).to_pandas(),
+                values = bars.mark_text(align="left", dx=4, color="#898781").encode(
+                    text=alt.Text("confidence:Q", format=".2f")
+                )
+                st.altair_chart(
+                    (bars + values).properties(height=30 * len(candidates) + 40),
                     use_container_width=True,
                 )
-                st.download_button(
-                    "⬇️ Download CSV",
-                    data=df_f.to_pandas().to_csv(index=False),
-                    file_name=f"agency_trends_{start_yr}_{end_yr}.csv",
-                    mime="text/csv",
-                )
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# TAB 3 — PE Explorer
-# ══════════════════════════════════════════════════════════════════════════════
-
-with tab_explorer:
-    st.subheader("Program Element Explorer")
-
-    col_a, col_b, col_c = st.columns(3)
-    agency_filter = col_a.multiselect(
-        "Agency",
-        ["Army", "Navy", "Air Force", "Defense-Wide", "Space Force", "OT&E"],
-    )
-    ba_filter = col_b.multiselect(
-        "Budget Activity",
-        [
-            "BA1 - Basic Research",
-            "BA2 - Applied Research",
-            "BA3 - Advanced Technology Development",
-            "BA4 - Advanced Component Development & Prototypes",
-            "BA5 - System Development & Demonstration",
-            "BA6 - Management Support",
-            "BA7 - Operational Systems Development",
-            "BA8 - Software And Digital Technology Pilot Programs",
-        ],
-    )
-    name_search = col_c.text_input("Search name", placeholder="e.g. hypersonic")
-
-    if st.button("Search PEs", type="primary"):
-        with SessionFactory() as session:
-            stmt = select(
-                ProgramElement.pe_number,
-                ProgramElement.program_name,
-                ProgramElement.agency,
-                ProgramElement.budget_activity,
-            ).where(ProgramElement.is_classified == False)  # noqa: E712
-            if agency_filter:
-                stmt = stmt.where(ProgramElement.agency.in_(agency_filter))
-            if ba_filter:
-                stmt = stmt.where(ProgramElement.budget_activity.in_(ba_filter))
-            if name_search:
-                stmt = stmt.where(
-                    ProgramElement.program_name.ilike(f"%{name_search}%")
-                )
-            stmt = stmt.order_by(ProgramElement.agency, ProgramElement.pe_number)
-            rows = session.execute(stmt).all()
-
-        if not rows:
-            st.info("No program elements match the filters.")
-        else:
-            df_pe = pl.DataFrame(rows, schema={
-                "pe_number":       pl.Utf8,
-                "program_name":    pl.Utf8,
-                "agency":          pl.Utf8,
-                "budget_activity": pl.Utf8,
-            }, orient="row")
-            st.caption(f"{len(df_pe):,} program elements found")
-            st.dataframe(df_pe.to_pandas(), use_container_width=True, height=420)
-
-            st.divider()
-            options = ["— select a PE —"] + [
-                f"{r[0]}  |  {r[1][:55]}  |  {r[2]}" for r in rows
-            ]
-            pe_choice = st.selectbox("View funding trend", options)
-            if pe_choice != options[0]:
-                sel_num    = pe_choice.split("|")[0].strip()
-                sel_agency = pe_choice.split("|")[-1].strip()
-                with SessionFactory() as session:
-                    pe_row = session.execute(
-                        select(ProgramElement.id, ProgramElement.program_name)
-                        .where(ProgramElement.pe_number == sel_num)
-                    ).first()
-                if pe_row:
-                    _plot_pe_trend(pe_row[0], pe_row[1], sel_agency)
-                    with st.expander("Full funding table"):
-                        df_w = _get_pe_funding_wide(pe_row[0])
-                        if not df_w.is_empty():
-                            st.dataframe(df_w.to_pandas(), use_container_width=True)
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# TAB 4 — Policy Alignment
-# ══════════════════════════════════════════════════════════════════════════════
-
-with tab_policy:
-    st.subheader("Policy Alignment")
-    st.markdown(
-        "Cross-reference NDAA, NDS, and NSS policy documents against actual "
-        "R-1 budget allocations. First load takes ~5 seconds (uses cached embeddings)."
-    )
-
-    pol_sub = st.tabs([
-        "🎯  Gap Analysis",
-        "📄  PE → Policy",
-        "🗺  NDS Priority Map",
-    ])
-
-    # ── Shared: lazy-load the policy linker ───────────────────────────────────
-    # Loaded on first interaction with this tab, then cached.
-
-    # ══ Sub-tab 1 — Gap Analysis ══════════════════════════════════════════════
-    with pol_sub[0]:
-        st.markdown(
-            "Enter a defence priority topic. See which programs fund it "
-            "and whether spending went up or down after policy was published."
-        )
-
-        col_g1, col_g2 = st.columns([4, 1])
-        gap_query = col_g1.text_input(
-            "Policy topic",
-            placeholder="e.g.  hypersonic strike  ·  integrated deterrence  ·  cyber warfare",
-            key="gap_query",
-        )
-        col_s1, col_s2, col_s3 = st.columns(3)
-        gap_start = col_s1.slider("Start FY", 2015, 2024, 2020, key="gap_start")
-        gap_end   = col_s2.slider("End FY",   2016, 2026, 2026, key="gap_end")
-        gap_dtype = col_s3.multiselect(
-            "Doc types",
-            ["NDS", "NSS", "NDAA"],
-            default=["NDS"],
-            key="gap_dtype",
-        )
-
-        if st.button("Run Gap Analysis", type="primary", key="run_gap"):
-            if not gap_query.strip():
-                st.warning("Enter a topic first.")
             else:
-                status_pol = st.empty()
-                if "policy_linker_loaded" not in st.session_state:
-                    status_pol.info("⏳ Loading policy embeddings from cache (~5s)…")
-                pol_linker = _get_policy_linker()
-                st.session_state["policy_linker_loaded"] = True
-                status_pol.empty()
+                sel = candidates[0]
 
-                with st.spinner("Analysing…"):
-                    df_gap = pol_linker.gap_analysis(
-                        gap_query.strip(),
-                        start_fy=gap_start,
-                        end_fy=gap_end,
-                        doc_type_filter=gap_dtype or None,
-                        top_n_pes=10,
+            # ═══ Program profile ═══
+            sub_funding, sub_plans, sub_awards, sub_news = st.tabs(
+                ["Funding", "Plans & Work", "Contracts & Awards", "In the News"]
+            )
+
+            # --- Funding ---
+            with sub_funding:
+                with SessionFactory() as session:
+                    hist = TrendTracker(session).get_pe_history(
+                        sel["pe_number"], sel["agency"]
                     )
-
-                if df_gap.is_empty():
-                    st.warning("No matching programs found. Try a broader topic.")
+                if hist.is_empty():
+                    st.info(
+                        "No funding lines for this program in the database "
+                        "(R-1 coverage: FY1998–FY2027)."
+                    )
                 else:
-                    # ── Summary metrics ────────────────────────────────────
-                    fy_cols = sorted(
-                        [c for c in df_gap.columns if c.startswith("FY")
-                         and c.endswith("$M")],
-                        key=lambda x: int(x[2:6])
-                    )
-                    n_up   = df_gap.filter(pl.col("funding_trend") == "↑ UP").height
-                    n_down = df_gap.filter(pl.col("funding_trend") == "↓ DOWN").height
-                    n_flat = df_gap.filter(pl.col("funding_trend") == "→ FLAT").height
+                    pdf = hist.to_pandas()
+                    pdf["amount_m"] = pdf["amount_thousands"] / 1_000.0
+                    pdf["yoy_pct"] = pdf["amount_m"].pct_change() * 100.0
 
+                    latest = pdf.iloc[-1]
                     m1, m2, m3, m4 = st.columns(4)
-                    m1.metric("Programs matched", len(df_gap))
-                    m2.metric("↑ Funding up",   n_up)
-                    m3.metric("↓ Funding down", n_down)
-                    m4.metric("→ Flat",          n_flat)
+                    delta = (
+                        f"{pdf['yoy_pct'].iloc[-1]:+.1f}% YoY"
+                        if len(pdf) > 1 and pd.notna(pdf["yoy_pct"].iloc[-1])
+                        else None
+                    )
+                    m1.metric(
+                        f"FY{int(latest.fiscal_year)} ({latest.basis})",
+                        f"${latest.amount_m:,.1f}M",
+                        delta=delta,
+                    )
+                    peak = pdf.loc[pdf["amount_m"].idxmax()]
+                    m2.metric(f"Peak (FY{int(peak.fiscal_year)})",
+                              f"${peak.amount_m:,.1f}M")
+                    m3.metric(
+                        "History",
+                        f"{len(pdf)} yrs",
+                        help=f"FY{int(pdf.fiscal_year.min())}–"
+                             f"FY{int(pdf.fiscal_year.max())}",
+                    )
+                    first = pdf.iloc[0]
+                    span = int(latest.fiscal_year - first.fiscal_year)
+                    if span > 0 and first.amount_m > 0 and latest.amount_m > 0:
+                        cagr = ((latest.amount_m / first.amount_m)
+                                ** (1 / span) - 1) * 100
+                        m4.metric(f"CAGR ({span}y)", f"{cagr:+.1f}%")
 
-                    # ── Trend chart ────────────────────────────────────────
-                    if fy_cols and len(df_gap) > 0:
-                        import matplotlib.pyplot as plt
-                        import matplotlib.ticker as mticker
+                    base = alt.Chart(pdf).encode(
+                        x=alt.X("fiscal_year:O", title="Fiscal Year")
+                    )
+                    line = base.mark_line(color="#c3c2b7", strokeWidth=2).encode(
+                        y=alt.Y("amount_m:Q", title="$ Millions"),
+                    )
+                    points = base.mark_point(filled=True, size=90).encode(
+                        y="amount_m:Q",
+                        color=alt.Color("basis:N", scale=BASIS_COLORS,
+                                        title="Figure basis"),
+                        tooltip=[
+                            alt.Tooltip("fiscal_year:O", title="FY"),
+                            alt.Tooltip("amount_m:Q", format=",.1f", title="$M"),
+                            alt.Tooltip("basis:N", title="Basis"),
+                        ],
+                    )
+                    st.altair_chart((line + points).properties(height=280),
+                                    use_container_width=True)
+                    st.caption(
+                        "Each year shows its most reliable figure: reported "
+                        "actuals, then the enacted/current-year figure, then "
+                        "the budget request."
+                    )
 
-                        fig, ax = plt.subplots(figsize=(12, 4))
-                        fig.patch.set_facecolor("#fafafa")
-                        ax.set_facecolor("#fafafa")
+                    yoy_df = pdf.dropna(subset=["yoy_pct"])
+                    if not yoy_df.empty:
+                        yoy_chart = alt.Chart(yoy_df).mark_bar(
+                            cornerRadiusEnd=2
+                        ).encode(
+                            x=alt.X("fiscal_year:O", title="Fiscal Year"),
+                            y=alt.Y("yoy_pct:Q", title="YoY change (%)"),
+                            color=alt.condition(
+                                alt.datum.yoy_pct >= 0,
+                                alt.value("#2a78d6"), alt.value("#e34948"),
+                            ),
+                            tooltip=[
+                                alt.Tooltip("fiscal_year:O", title="FY"),
+                                alt.Tooltip("yoy_pct:Q", format="+.1f",
+                                            title="YoY %"),
+                            ],
+                        )
+                        st.altair_chart(yoy_chart.properties(height=160),
+                                        use_container_width=True)
 
-                        df_pd = df_gap.to_pandas()
-                        for _, row in df_pd.head(6).iterrows():
-                            vals = [row.get(c, 0) or 0 for c in fy_cols]
-                            years = [int(c[2:6]) for c in fy_cols]
-                            ax.plot(
-                                years, vals,
-                                marker="o", markersize=4, linewidth=1.8,
-                                label=row.get("pe_number", ""),
+                    with st.expander("Underlying funding table"):
+                        st.dataframe(
+                            pdf[["fiscal_year", "amount_thousands", "basis"]]
+                            .rename(columns={"fiscal_year": "FY",
+                                             "amount_thousands": "$K",
+                                             "basis": "Basis"}),
+                            use_container_width=True, hide_index=True,
+                        )
+
+            # --- Plans & Work (R-2 justification narratives) ---
+            with sub_plans:
+                from sqlalchemy import select as sa_select
+                from storage.db import PEAccomplishment, PENarrative
+                with SessionFactory() as session:
+                    narrs = session.execute(
+                        sa_select(PENarrative).where(
+                            PENarrative.pe_number == sel["pe_number"],
+                            PENarrative.agency == sel["agency"],
+                        ).order_by(PENarrative.fiscal_year.desc(),
+                                   PENarrative.project_number)
+                    ).scalars().all()
+                    accs = session.execute(
+                        sa_select(PEAccomplishment).where(
+                            PEAccomplishment.pe_number == sel["pe_number"],
+                            PEAccomplishment.agency == sel["agency"],
+                        )
+                    ).scalars().all()
+
+                if not narrs and not accs:
+                    st.info(
+                        "No justification narrative for this program. "
+                        "Narrative books are ingested for Defense-Wide "
+                        "components (PB2026–PB2027); Army, Navy, and Air "
+                        "Force publish theirs as PDF only — not yet ingested."
+                    )
+                else:
+                    pe_level = [n for n in narrs if n.project_number == ""]
+                    projects, seen_projects = [], set()
+                    for n in narrs:
+                        if n.project_number and n.project_number not in seen_projects:
+                            seen_projects.add(n.project_number)
+                            projects.append(n)
+                    if pe_level:
+                        with st.expander(
+                            f"Program mission description "
+                            f"(PB{pe_level[0].fiscal_year})", expanded=True
+                        ):
+                            st.write(pe_level[0].description)
+                    if projects:
+                        with st.expander(
+                            f"Projects under this program ({len(projects)})"
+                        ):
+                            for p in sorted(projects,
+                                            key=lambda n: n.project_number):
+                                st.markdown(
+                                    f"**{p.project_number} — {p.project_title}**"
+                                )
+                                st.caption(
+                                    p.description[:500]
+                                    + ("…" if len(p.description) > 500 else "")
+                                )
+                    if accs:
+                        label_rank = {"PY": 0, "CY": 1, "BY": 2}
+                        best_rank = {}
+                        for a in accs:
+                            if a.accomplishment_fy:
+                                r = label_rank.get(a.year_label[:2], 3)
+                                best_rank[a.accomplishment_fy] = min(
+                                    r, best_rank.get(a.accomplishment_fy, 3)
+                                )
+                        year_tag = {0: "reported work", 1: "current-year plan",
+                                    2: "requested plan"}
+                        fys = sorted(best_rank)
+                        pick_fy = st.selectbox(
+                            "Work detailed for", fys,
+                            format_func=lambda y: (
+                                f"FY{y} ({year_tag.get(best_rank[y], 'plan')})"
+                            ),
+                            key=f"acc_fy::{sel['pe_number']}",
+                        )
+                        year_accs = sorted(
+                            (a for a in accs
+                             if a.accomplishment_fy == pick_fy
+                             and label_rank.get(a.year_label[:2], 3)
+                                 == best_rank[pick_fy]),
+                            key=lambda a: -(a.funding_millions or 0),
+                        )
+                        for a in year_accs[:12]:
+                            amt = (f"${a.funding_millions:,.1f}M — "
+                                   if a.funding_millions else "")
+                            st.markdown(f"**{amt}{a.title or a.project_number}**")
+                            if a.text:
+                                st.caption(a.text[:700]
+                                           + ("…" if len(a.text) > 700 else ""))
+                        if len(year_accs) > 12:
+                            st.caption(
+                                f"…and {len(year_accs) - 12} more line items."
                             )
 
-                        ax.set_title(
-                            f"BY Request Funding — '{gap_query}' matched programs",
-                            fontsize=10, loc="left"
+            # --- Contracts & Awards ---
+            with sub_awards:
+                ac1, _ = st.columns([1, 3])
+                award_fy = ac1.selectbox(
+                    "Fiscal year", EXECUTION_FYS,
+                    index=EXECUTION_FYS.index(2025), key="award_fy",
+                )
+                awards_key = f"awards::{sel['pe_number']}::{award_fy}::{query}"
+                if st.button("Search awards (USAspending.gov)"):
+                    with st.spinner("Querying USAspending.gov..."):
+                        st.session_state[awards_key] = fetch_program_awards(
+                            sel["name"], sel["agency"], award_fy, query
                         )
-                        ax.set_ylabel("$M")
-                        ax.yaxis.set_major_formatter(
-                            mticker.FuncFormatter(lambda x, _: f"${x:,.0f}M")
+                awards = st.session_state.get(awards_key)
+                if awards is not None:
+                    if awards.empty:
+                        st.info(
+                            f"No prime awards matched this program's keywords "
+                            f"in FY{award_fy}. Why this can happen even when "
+                            "money moved: award descriptions rarely name the "
+                            "budget program; Other Transactions aren't "
+                            "searchable as a group; work under umbrella "
+                            "vehicles (PIAs, IDIQs) hides in generic prime "
+                            "descriptions — try the subaward search below; "
+                            "and DoD awards post with a ~90-day delay."
                         )
-                        ax.xaxis.set_major_locator(mticker.MaxNLocator(integer=True))
-                        ax.tick_params(axis="x", rotation=45, labelsize=8)
-                        ax.tick_params(axis="y", labelsize=8)
-                        ax.grid(axis="y", color="#e0e0e0", linewidth=0.7, zorder=0)
-                        ax.spines[["top", "right"]].set_visible(False)
-                        ax.legend(
-                            loc="upper left", bbox_to_anchor=(1.01, 1),
-                            fontsize=8, frameon=False,
+                    else:
+                        by_recipient = (
+                            awards.groupby("recipient", as_index=False)["amount"]
+                            .sum().sort_values("amount", ascending=False)
                         )
-                        plt.tight_layout()
-                        st.pyplot(fig)
-                        plt.close(fig)
-
-                    # ── Results table ──────────────────────────────────────
-                    display_cols = (
-                        ["pe_number", "program_name", "agency",
-                         "relevance_score", "funding_trend"]
-                        + fy_cols
-                    )
-                    display_cols = [c for c in display_cols if c in df_gap.columns]
-                    st.dataframe(
-                        df_gap.select(display_cols).to_pandas(),
-                        use_container_width=True,
-                    )
-
-                    # ── Policy context ─────────────────────────────────────
-                    with st.expander("📄 Supporting policy excerpts"):
-                        pol_hits = pol_linker.query_policy(
-                            gap_query.strip(), top_n=5,
-                            doc_type_filter=gap_dtype or None,
+                        st.altair_chart(money_bar(by_recipient, "recipient"),
+                                        use_container_width=True)
+                        display = awards.copy()
+                        display["amount_m"] = display["amount"] / 1e6
+                        display["description"] = (
+                            display["description"].str.slice(0, 140)
                         )
-                        if not pol_hits.is_empty():
-                            for row in pol_hits.to_dicts():
-                                st.markdown(
-                                    f"**{row['doc_type']} {row['year']} "
-                                    f"— {row['section_title'] or ''}**  "
-                                    f"*(score: {row['score']:.2f})*"
-                                )
-                                st.caption(row["text"][:500])
-                                st.divider()
+                        st.dataframe(
+                            display[["recipient", "amount_m", "instrument",
+                                     "sub_agency", "start_date",
+                                     "description", "url"]],
+                            use_container_width=True, hide_index=True,
+                            column_config={
+                                "recipient": "Recipient",
+                                "amount_m": st.column_config.NumberColumn(
+                                    "Award $M", format="%.2f"),
+                                "instrument": "Instrument",
+                                "sub_agency": "Awarding office",
+                                "start_date": "Start",
+                                "description": "Description",
+                                "url": st.column_config.LinkColumn(
+                                    "Record", display_text="Open"),
+                            },
+                        )
+                        st.caption(
+                            "Keyword-matched DoD-funded prime awards "
+                            "(contracts and grants/cooperative agreements) — "
+                            "treat as leads, not a ledger: public award "
+                            "records carry no program-element linkage."
+                        )
 
-                    # ── Download ───────────────────────────────────────────
-                    st.download_button(
-                        "⬇️ Download results (CSV)",
-                        data=df_gap.to_pandas().to_csv(index=False),
-                        file_name=f"gap_analysis_{gap_query[:30].replace(' ','_')}.csv",
-                        mime="text/csv",
-                    )
+                    subs_key = f"subs::{sel['pe_number']}::{award_fy}::{query}"
+                    if st.button("Search subawards (umbrella vehicles)"):
+                        with st.spinner("Querying subawards..."):
+                            st.session_state[subs_key] = fetch_program_subawards(
+                                sel["name"], award_fy, query
+                            )
+                    subs = st.session_state.get(subs_key)
+                    if subs is not None:
+                        if subs.empty:
+                            st.caption(
+                                "No matching subawards. Subaward reporting "
+                                "is less complete than prime awards."
+                            )
+                        else:
+                            sdisp = subs.copy()
+                            sdisp["amount_m"] = sdisp["amount"] / 1e6
+                            sdisp["description"] = (
+                                sdisp["description"].str.slice(0, 140)
+                            )
+                            st.dataframe(
+                                sdisp[["subawardee", "amount_m",
+                                       "prime_recipient", "date",
+                                       "description"]],
+                                use_container_width=True, hide_index=True,
+                                column_config={
+                                    "subawardee": "Subawardee",
+                                    "amount_m": st.column_config.NumberColumn(
+                                        "Sub-award $M", format="%.2f"),
+                                    "prime_recipient": "Prime recipient",
+                                    "date": "Date",
+                                    "description": "Description",
+                                },
+                            )
 
-    # ══ Sub-tab 2 — PE → Policy ═══════════════════════════════════════════════
-    with pol_sub[1]:
-        st.markdown(
-            "Enter a PE number or program name to find the policy language "
-            "— NDAA sections, NDS passages — that covers it."
-        )
-
-        pe_pol_input = st.text_input(
-            "PE number or program name",
-            placeholder="e.g.  0604114A  ·  LTAMDS  ·  hypersonics",
-            key="pe_pol_input",
-        )
-        pe_pol_types = st.multiselect(
-            "Doc types to search",
-            ["NDS", "NSS", "NDAA"],
-            default=["NDS", "NDAA"],
-            key="pe_pol_types",
-        )
-
-        if st.button("Find Policy References", type="primary", key="run_pe_pol"):
-            if not pe_pol_input.strip():
-                st.warning("Enter a PE number or name first.")
-            else:
-                status_pol2 = st.empty()
-                if "policy_linker_loaded" not in st.session_state:
-                    status_pol2.info("⏳ Loading policy embeddings from cache (~5s)…")
-                pol_linker = _get_policy_linker()
-                st.session_state["policy_linker_loaded"] = True
-                status_pol2.empty()
-
-                with st.spinner("Searching policy documents…"):
-                    df_pol = pol_linker.pe_to_policy(
-                        pe_pol_input.strip(),
-                        top_n=10,
-                        doc_type_filter=pe_pol_types or None,
-                    )
-
-                if df_pol.is_empty():
-                    st.warning("No policy references found.")
+            # --- In the News ---
+            with sub_news:
+                if enricher is None:
+                    from analysis import oss_enricher
+                    _, missing = oss_enricher.status()
+                    if missing == "package":
+                        st.caption(
+                            "AI lookups are disabled — install the SDK with "
+                            "`pip install google-genai` (into the Python that "
+                            "runs streamlit), then restart the app."
+                        )
+                    else:
+                        st.caption(
+                            "AI lookups are disabled — set the GEMINI_API_KEY "
+                            "environment variable and restart the app."
+                        )
                 else:
-                    st.caption(f"{len(df_pol)} policy references found")
-                    for row in df_pol.to_dicts():
-                        score = row["score"]
-                        badge = (
-                            "🟢" if score >= 0.55
-                            else "🟡" if score >= 0.40
-                            else "🟠"
-                        )
-                        st.markdown(
-                            f"{badge} **{row['doc_type']} {row['year']}"
-                            f" — {row['section_title'] or 'Unknown Section'}**"
-                            f"  *(similarity: {score:.2f})*"
-                        )
-                        st.caption(row["text"][:600])
-                        st.divider()
+                    hits_key = f"oss::{sel['pe_number']}::{sel['agency']}"
+                    if st.button("Search recent coverage"):
+                        with st.spinner("Searching news and public sources..."):
+                            st.session_state[hits_key] = (
+                                enricher.find_open_source_hits(
+                                    sel["name"], sel["pe_number"], sel["agency"]
+                                )
+                            )
+                    hits = st.session_state.get(hits_key)
+                    if hits is not None:
+                        if not hits:
+                            st.info("No recent coverage found.")
+                        for hit in hits or []:
+                            title = (f"{hit['title']} — {hit['source']} "
+                                     f"({hit['date']})")
+                            with st.expander(title):
+                                st.write(hit["summary"])
+                                st.progress(
+                                    min(max(hit["relevance"], 0.0), 1.0),
+                                    text=f"Relevance {hit['relevance']:.0%}",
+                                )
+                                if hit.get("url"):
+                                    st.markdown(f"[Source link]({hit['url']})")
 
-    # ══ Sub-tab 3 — NDS Priority Map ══════════════════════════════════════════
-    with pol_sub[2]:
-        st.markdown(
-            "Map every NDS section to its most relevant budget programs. "
-            "Useful for understanding which programs operationalise each strategic priority."
+# ═══════════════════════════ Rhetoric vs. Budget ═════════════════════════════
+with tab_rhetoric:
+    st.header("Rhetoric vs. budget")
+    st.markdown(
+        "Did the money follow the talk? Public emphasis on a program — "
+        "press briefings, testimony, trade coverage — characterized year by "
+        "year and correlated against its funding trajectory."
+    )
+    enricher_r = get_enricher()
+    if enricher_r is None:
+        st.caption(
+            "AI lookups are disabled — set the GEMINI_API_KEY environment "
+            "variable and restart the app to enable this analysis."
         )
-
-        nds_yr = st.selectbox(
-            "NDS year",
-            [2022, 2018, 2014],
-            index=0,
-            key="nds_map_year",
+    else:
+        rq = st.text_input(
+            "Program to analyze", key="rhetoric_query",
+            placeholder="e.g. launched effects",
         )
-
-        if st.button("Generate NDS → PE Map", type="primary", key="run_nds_map"):
-            status_pol3 = st.empty()
-            if "policy_linker_loaded" not in st.session_state:
-                status_pol3.info("⏳ Loading policy embeddings from cache (~5s)…")
-            pol_linker = _get_policy_linker()
-            st.session_state["policy_linker_loaded"] = True
-            status_pol3.empty()
-
-            with st.spinner(
-                f"Mapping NDS {nds_yr} sections to PE programs "
-                "(may take ~30s)…"
-            ):
-                df_map = pol_linker.nds_priority_mapping(
-                    nds_year=nds_yr,
-                    top_pes_per_section=5,
-                )
-
-            if df_map.is_empty():
-                st.warning(
-                    f"No NDS {nds_yr} data found. "
-                    "Check that the document was parsed into the DB."
-                )
+        if rq:
+            with st.spinner("Finding the program..."):
+                linker = load_matching_models()
+                rres = linker.link_query(rq)
+            if not rres["matched_pe_id"]:
+                st.warning("No program match — try another name or a PE number.")
             else:
-                st.caption(
-                    f"{df_map['nds_section'].n_unique()} NDS sections · "
-                    f"{len(df_map)} PE mappings"
+                rcands = rres["candidates"]
+                rlabels = [
+                    f"PE {c['pe_number']} — {c['name'][:45]} [{c['agency']}]"
+                    for c in rcands
+                ]
+                picked = st.multiselect(
+                    "Programs to aggregate (related PEs sum into one "
+                    "funding series)",
+                    rlabels, default=rlabels[:1], key="rhet_pes",
                 )
-                st.dataframe(
-                    df_map.to_pandas(),
-                    use_container_width=True,
-                    height=500,
+                yr_lo, yr_hi = st.slider(
+                    "Analysis window", 2015, 2026, (2020, 2026),
+                    key="rhet_years",
                 )
-                st.download_button(
-                    "⬇️ Download mapping (CSV)",
-                    data=df_map.to_pandas().to_csv(index=False),
-                    file_name=f"nds_{nds_yr}_pe_mapping.csv",
-                    mime="text/csv",
+                sel_cands = [rcands[rlabels.index(l)] for l in picked]
+                rkey = (
+                    "rhet::" + "|".join(sorted(c["pe_number"] for c in sel_cands))
+                    + f"::{yr_lo}-{yr_hi}"
                 )
+                if sel_cands and st.button(
+                    "Analyze open-source signal (AI + web search)"
+                ):
+                    with st.spinner("Characterizing public statements by year..."):
+                        st.session_state[rkey] = enricher_r.annual_signal(
+                            sel_cands[0]["name"],
+                            [c["pe_number"] for c in sel_cands],
+                            yr_lo, yr_hi,
+                        )
+                sig_rows = st.session_state.get(rkey)
+                if sig_rows is not None and sel_cands:
+                    if not sig_rows:
+                        st.info(
+                            "The AI could not characterize open-source "
+                            "coverage for this program and window — usually "
+                            "a very low-visibility program."
+                        )
+                    else:
+                        from analysis.rhetoric_tracker import (
+                            align_rhetoric_funding, headline_sentence,
+                        )
+                        signal = pd.DataFrame(sig_rows)
+                        with SessionFactory() as session:
+                            tracker = TrendTracker(session)
+                            frames = [
+                                tracker.get_pe_history(
+                                    c["pe_number"], c["agency"]
+                                ).to_pandas()
+                                for c in sel_cands
+                            ]
+                        frames = [f for f in frames if not f.empty]
+                        funding = (
+                            pd.concat(frames)[["fiscal_year", "amount_thousands"]]
+                            if frames else
+                            pd.DataFrame(columns=["fiscal_year",
+                                                  "amount_thousands"])
+                        )
+                        funding = funding[funding["fiscal_year"] >= yr_lo]
+
+                        r = align_rhetoric_funding(signal, funding)
+                        display_name = sel_cands[0]["name"]
+                        st.markdown(headline_sentence(display_name, r,
+                                                      yr_lo, yr_hi))
+
+                        a = r["alignment"]
+                        m1, m2, m3, m4 = st.columns(4)
+                        if r["mention_trend_pct"] not in (None, float("inf")):
+                            m1.metric("Mention trend",
+                                      f"{r['mention_trend_pct']:+.0f}%")
+                        if r["positive_share"] is not None:
+                            m2.metric("Favorable statements",
+                                      f"{r['positive_share']:.0f}%")
+                        if r["funding_cagr_pct"] is not None:
+                            m3.metric("Funding CAGR",
+                                      f"{r['funding_cagr_pct']:+.1f}%/yr")
+                        if a:
+                            m4.metric(
+                                "Alignment", f"{a['coefficient']:+.2f}",
+                                help=(f"Spearman ρ at a {a['lead_years']}-year "
+                                      f"funding lead, n={a['n_years']} years. "
+                                      f"All leads: {a['by_lead']}"),
+                            )
+
+                        fund_year = (
+                            funding.groupby("fiscal_year", as_index=False)
+                            ["amount_thousands"].sum()
+                        )
+                        fund_year["amount_m"] = fund_year["amount_thousands"] / 1e3
+                        fund_year = fund_year[fund_year["fiscal_year"] <= yr_hi + 2]
+                        top_chart = (
+                            alt.Chart(fund_year)
+                            .mark_line(color="#2a78d6", strokeWidth=2,
+                                       point=alt.OverlayMarkDef(filled=True,
+                                                                size=60,
+                                                                color="#2a78d6"))
+                            .encode(
+                                x=alt.X("fiscal_year:O", title=None),
+                                y=alt.Y("amount_m:Q", title="Funding $M"),
+                                tooltip=[
+                                    alt.Tooltip("fiscal_year:O", title="FY"),
+                                    alt.Tooltip("amount_m:Q", format=",.1f",
+                                                title="$M"),
+                                ],
+                            )
+                            .properties(height=200)
+                        )
+                        bottom_chart = (
+                            alt.Chart(signal)
+                            .mark_line(color="#eb6834", strokeWidth=2,
+                                       point=alt.OverlayMarkDef(filled=True,
+                                                                size=60,
+                                                                color="#eb6834"))
+                            .encode(
+                                x=alt.X("fiscal_year:O", title="Fiscal Year"),
+                                y=alt.Y("mention_intensity:Q",
+                                        scale=alt.Scale(domain=[0, 10]),
+                                        title="Mention intensity (AI, 0–10)"),
+                                tooltip=[
+                                    alt.Tooltip("fiscal_year:O", title="FY"),
+                                    alt.Tooltip("mention_intensity:Q",
+                                                title="Intensity"),
+                                    alt.Tooltip("positive_pct:Q",
+                                                title="Favorable %"),
+                                    alt.Tooltip("negative_pct:Q",
+                                                title="Critical %"),
+                                    alt.Tooltip("notable_statement:N",
+                                                title="Notable statement"),
+                                ],
+                            )
+                            .properties(height=160)
+                        )
+                        st.altair_chart(alt.vconcat(top_chart, bottom_chart),
+                                        use_container_width=True)
+
+                        merged = r["merged"].copy()
+                        merged["statement"] = merged.apply(
+                            lambda row: (f"{row['notable_statement']} "
+                                         f"({row['statement_source']})"
+                                         if row["notable_statement"] else ""),
+                            axis=1,
+                        )
+                        st.dataframe(
+                            merged[["fiscal_year", "mention_intensity",
+                                    "positive_pct", "stated_priority",
+                                    "amount_m", "yoy_pct", "statement"]],
+                            use_container_width=True, hide_index=True,
+                            column_config={
+                                "fiscal_year": "FY",
+                                "mention_intensity": st.column_config
+                                    .NumberColumn("Intensity", format="%.0f"),
+                                "positive_pct": st.column_config
+                                    .NumberColumn("Favorable %", format="%.0f"),
+                                "stated_priority": "Named a priority",
+                                "amount_m": st.column_config
+                                    .NumberColumn("Funding $M", format="%.1f"),
+                                "yoy_pct": st.column_config
+                                    .NumberColumn("YoY %", format="%+.1f"),
+                                "statement": "Notable statement",
+                            },
+                        )
+                        with st.expander("Methodology & caveats"):
+                            st.markdown(
+                                "- **The open-source signal is an AI "
+                                "estimate**, grounded in web search — not a "
+                                "media-analytics mention count. Intensity is "
+                                "relative to the program's own baseline.\n"
+                                "- **Alignment coefficient** = Spearman rank "
+                                "correlation between annual mention intensity "
+                                "and annual funding, evaluated at 0, 1, and "
+                                "2-year funding leads (budgets are written "
+                                "1–2 years after the rhetoric); the strongest "
+                                "lead is reported.\n"
+                                "- With at most a handful of years, treat the "
+                                "coefficient as directional, not precise. "
+                                "Coverage bias: recent years are better "
+                                "documented online than older ones.\n"
+                                "- Funding series = discretionary figures for "
+                                "the selected PEs (actuals, then enacted, "
+                                "then request)."
+                            )
+
+# ═══════════════════════════════ Data Coverage ═══════════════════════════════
+with tab_coverage:
+    st.header("What this tool covers")
+    stats = fetch_coverage_stats()
+    s1, s2, s3, s4 = st.columns(4)
+    s1.metric("Programs tracked", f"{stats['programs']:,}")
+    s2.metric("Funding lines",
+              f"{stats['funding_lines']:,}",
+              help=f"FY{stats['fy_min']}–FY{stats['fy_max']}")
+    s3.metric("Programs with narratives", f"{stats['narrative_pes']:,}")
+    s4.metric("Work line items", f"{stats['accomplishments']:,}")
+
+    st.markdown(f"""
+| Source | Coverage | How it's used |
+|---|---|---|
+| **R-1 budget exhibits** (comptroller.war.gov) | FY1998–FY2027 requests; FY2026 enacted. Official XLSX for FY2012+; parsed PDFs before that | Funding trends and program funding histories (local database) |
+| **R-2 justification books** (official XML) | Defense-Wide components, PB2026–PB2027: {stats['narratives']:,} narratives, {stats['accomplishments']:,} accomplishment line items | Mission descriptions and "Plans & Work"; also sharpens program matching |
+| **USAspending.gov** (live queries) | Prime awards (contracts + grants/cooperative agreements), subawards, account-level obligations | "Contracts & Awards" and "Who got paid" |
+| **AI enrichment** (optional) | Google-grounded search and match resolution | "In the News" and ambiguity resolution |
+
+**Known blind spots — an empty result is often one of these, not an error:**
+
+- **Award ↔ program linkage doesn't exist in public data.** Award records carry no program-element field, so the Contracts & Awards search is keyword matching against award descriptions. Awards described generically won't surface.
+- **Umbrella vehicles hide task detail.** Work under PIAs, OTAs, and IDIQ task orders often posts under a generic umbrella description; the subaward search catches some, not all.
+- **Other Transactions** are not a searchable instrument group in the USAspending API.
+- **Timing:** DoD awards post with a ~90-day display delay, and the current fiscal year is always partial.
+- **Service justification books** (Army, Navy, Air Force) are published as PDF only — narratives currently cover Defense-Wide components. FY2025-and-earlier books are also PDF-only. Two broken links upstream: MDA's PB2027 and CYBERCOM's PB2026 XML (each covered by the other cycle).
+- **Classified programs** appear only as aggregate lines; the Intelligence Community publishes topline figures only.
+""")
