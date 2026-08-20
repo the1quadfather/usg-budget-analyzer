@@ -1,0 +1,11 @@
+# Data is volume-mounted at runtime, never baked into the image
+data/
+
+logs/
+__pycache__/
+*.py[cod]
+notebooks/
+.env
+.env.*
+Dockerfile
+docker-compose.yaml

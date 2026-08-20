@@ -1,0 +1,18 @@
+services:
+  budget-explorer:
+    build: .
+    container_name: dod-budget-explorer
+    ports:
+      - "8501:8501"
+    environment:
+      # Optional — enables AI features when set in the host environment
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+    volumes:
+      # SQLite DB + parquet live outside the container and survive rebuilds
+      - ./data:/app/data
+      # Sentence-transformer model cache (downloaded once)
+      - hf-cache:/app/.hf-cache
+    restart: unless-stopped
+
+volumes:
+  hf-cache:

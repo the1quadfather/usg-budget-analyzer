@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Raw source documents — re-downloadable via the acquisition pipeline
+dod_ic_budget_analyzer/data/raw/
+
+# Logs & scratch
+dod_ic_budget_analyzer/logs/
+*.log
+
+# Secrets & local config
+.env
+.env.*
+
+# Tooling
+.claude/
+.vscode/
+.ipynb_checkpoints/
