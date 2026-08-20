@@ -72,6 +72,11 @@ Rhetoric vs. Budget tab:
 setx GEMINI_API_KEY "your-key"     # Windows; export on Linux/macOS
 ```
 
+**Keys are per-user and never live in this repository.** The app reads
+`GEMINI_API_KEY` (or `GOOGLE_API_KEY`) from the environment only — there is
+no key file, config entry, or Docker build argument for it, and `.env` files
+are gitignored as a guardrail. Don't commit credentials in any form.
+
 ## Quickstart (Docker)
 
 ```bash
