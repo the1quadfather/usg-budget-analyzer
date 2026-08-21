@@ -49,6 +49,17 @@ def _api_key() -> Optional[str]:
         key = os.environ.get(var, "").strip()
         if key:
             return key
+    # Hosted Streamlit (Community Cloud) delivers secrets via st.secrets,
+    # not environment variables. Guarded: fine when streamlit is absent or
+    # no secrets file exists.
+    try:
+        import streamlit as st
+        for var in config.GEMINI_API_KEY_ENV_VARS:
+            key = str(st.secrets.get(var, "")).strip()
+            if key:
+                return key
+    except Exception:
+        pass
     return None
 
 
