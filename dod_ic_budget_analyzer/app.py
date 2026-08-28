@@ -22,6 +22,7 @@ import streamlit as st
 import polars as pl
 from pathlib import Path
 
+import config as config_module
 from storage.db import get_engine, get_session_factory
 from matching.fuzzy_matcher import ProgramMatcher
 from analysis.program_linker import ProgramLinker
@@ -71,6 +72,73 @@ def get_enricher():
     except Exception:
         pass
     return None
+
+def current_user_id() -> str:
+    """
+    Who to bill, and whose grounded history to read. Anonymous sessions share
+    the "local" identity; wiring st.login() later replaces this without any
+    caller needing to change.
+    """
+    try:
+        if st.user.is_logged_in:
+            return str(st.user.sub or st.user.email or "local")
+    except Exception:
+        pass
+    return "local"
+
+
+def log_search(query: str, result: dict) -> None:
+    """
+    Record a Program Finder query so precompute can follow real demand instead
+    of guessing, and so the golden eval set has real queries to grow from.
+    """
+    from analysis.ai_budget import session_factory, _utcnow
+    from storage.db import SearchLog
+    try:
+        with session_factory()() as sess:
+            sess.add(SearchLog(
+                ts=_utcnow(), user_id=current_user_id(), query=query[:500],
+                matched_pe=result.get("pe_number"),
+                agency=result.get("agency"),
+                needs_review=1 if result.get("needs_review") else 0,
+            ))
+            sess.commit()
+    except Exception:
+        pass  # demand logging must never break a search
+
+
+def render_ai_result(res, render_fn, empty_msg: str = "Nothing found.") -> None:
+    """
+    Render an EnrichmentResult with its provenance shown honestly.
+
+    Three things every AI panel owes the reader: the answer, how old it is,
+    and - for anything grounded in Google Search - the Search Suggestions the
+    Gemini API terms require be displayed alongside it.
+    """
+    if res.blocked:
+        st.info(res.message)
+        return
+    if not res.grounded:
+        # The model answered without searching, so whatever it produced is
+        # recollection rather than retrieved coverage. Say so plainly instead
+        # of showing invented headlines that look exactly like real ones.
+        st.warning(
+            "The web search didn't run for this program, so there's nothing "
+            "sourced to show. Low-visibility programs often produce no "
+            "search-worthy coverage. Try again, or check Plans & Work for "
+            "what the official justification says."
+        )
+        return
+    if res.empty:
+        st.info(empty_msg)
+    else:
+        render_fn(res.payload)
+    if res.cached and res.created_at:
+        st.caption(f"Saved analysis from {res.created_at:%Y-%m-%d}. "
+                   "Re-run below for a fresh look.")
+    if res.search_suggestions_html:
+        st.html(res.search_suggestions_html)
+
 
 # --- Cached external lookups (USAspending.gov) ---
 
@@ -270,6 +338,8 @@ with tab_finder:
             linker = load_matching_models()
             result = linker.link_query(query)
 
+        log_search(query, result)
+
         if not result["matched_pe_id"]:
             st.warning(
                 "No program match. Try the program's common name, a quote "
@@ -294,29 +364,37 @@ with tab_finder:
                 )
 
             # --- AI resolution of ambiguous candidate sets ---
-            adj_key = f"adjudication::{query}"
-            adjudication = st.session_state.get(adj_key)
-            if enricher and result["needs_review"] and adjudication is None:
-                if st.button("Resolve ambiguous match (AI)"):
+            # Semi-automatic: a resolution this query has had before renders
+            # straight away; a new one offers a button. Adjudication isn't
+            # grounded, so one user's resolution serves everyone who later
+            # asks the same question.
+            adjudication = None
+            if enricher and result["needs_review"]:
+                uid = current_user_id()
+                res = enricher.adjudicate(query, candidates, user_id=uid,
+                                          allow_fresh=False)
+                if res.cold and st.button("Resolve ambiguous match (AI)"):
                     with st.spinner("Comparing candidates..."):
-                        st.session_state[adj_key] = (
-                            enricher.adjudicate(query, candidates)
-                            or {"no_match": True,
-                                "rationale": "The resolver call failed — see logs.",
-                                "confidence": 0.0, "pe_number": "", "agency": ""}
+                        res = enricher.adjudicate(query, candidates,
+                                                  user_id=uid,
+                                                  allow_fresh=True)
+                if res.blocked:
+                    st.info(res.message)
+                elif res.payload:
+                    adjudication = res.payload
+                    if adjudication.get("no_match"):
+                        st.info("**AI assessment:** no confident pick. "
+                                f"{adjudication['rationale']}")
+                    else:
+                        st.info(
+                            f"**AI assessment:** PE {adjudication['pe_number']} "
+                            f"({adjudication['agency']}) · confidence "
+                            f"{adjudication['confidence'] * 100:.0f}%\n\n"
+                            f"{adjudication['rationale']}"
                         )
-                    st.rerun()
-            if adjudication:
-                if adjudication.get("no_match"):
-                    st.info(f"**AI assessment:** no confident pick. "
-                            f"{adjudication['rationale']}")
-                else:
-                    st.info(
-                        f"**AI assessment:** PE {adjudication['pe_number']} "
-                        f"({adjudication['agency']}) · confidence "
-                        f"{adjudication['confidence'] * 100:.0f}%\n\n"
-                        f"{adjudication['rationale']}"
-                    )
+                    if res.cached and res.created_at:
+                        st.caption("Saved resolution from "
+                                   f"{res.created_at:%Y-%m-%d}.")
 
             # --- Candidate selector ---
             labels = [
@@ -662,19 +740,10 @@ with tab_finder:
                             "environment variable and restart the app."
                         )
                 else:
-                    hits_key = f"oss::{sel['pe_number']}::{sel['agency']}"
-                    if st.button("Search recent coverage"):
-                        with st.spinner("Searching news and public sources..."):
-                            st.session_state[hits_key] = (
-                                enricher.find_open_source_hits(
-                                    sel["name"], sel["pe_number"], sel["agency"]
-                                )
-                            )
-                    hits = st.session_state.get(hits_key)
-                    if hits is not None:
-                        if not hits:
-                            st.info("No recent coverage found.")
-                        for hit in hits or []:
+                    uid = current_user_id()
+
+                    def render_hits(hits):
+                        for hit in hits:
                             title = (f"{hit['title']} — {hit['source']} "
                                      f"({hit['date']})")
                             with st.expander(title):
@@ -685,6 +754,46 @@ with tab_finder:
                                 )
                                 if hit.get("url"):
                                     st.markdown(f"[Source link]({hit['url']})")
+
+                    # Cache-only probe first: coverage already fetched for this
+                    # program renders on arrival, and only a genuinely new
+                    # lookup costs anything. Grounded results are per-user by
+                    # design, so this reads only your own history.
+                    news = enricher.find_open_source_hits(
+                        sel["name"], sel["pe_number"], sel["agency"],
+                        user_id=uid, allow_fresh=False,
+                    )
+                    if news.cold:
+                        st.caption(
+                            "No saved coverage for this program yet."
+                        )
+                        if st.button("Search recent coverage "
+                                     "(AI + Google Search)"):
+                            with st.spinner(
+                                    "Searching news and public sources..."):
+                                news = enricher.find_open_source_hits(
+                                    sel["name"], sel["pe_number"],
+                                    sel["agency"], user_id=uid,
+                                    allow_fresh=True,
+                                )
+                            render_ai_result(news, render_hits,
+                                             "No recent coverage found.")
+                    else:
+                        render_ai_result(news, render_hits,
+                                         "No recent coverage found.")
+                        if st.button("Refresh coverage (AI + Google Search)"):
+                            with st.spinner("Searching for newer coverage..."):
+                                fresh = enricher.find_open_source_hits(
+                                    sel["name"], sel["pe_number"],
+                                    sel["agency"], user_id=uid,
+                                    allow_fresh=True, force=True,
+                                )
+                            # A refused refresh must say so rather than
+                            # silently re-showing the old answer.
+                            if fresh.blocked:
+                                st.info(fresh.message)
+                            else:
+                                st.rerun()
 
 # ═══════════════════════════ Rhetoric vs. Budget ═════════════════════════════
 with tab_rhetoric:
@@ -731,16 +840,56 @@ with tab_rhetoric:
                     "rhet::" + "|".join(sorted(c["pe_number"] for c in sel_cands))
                     + f"::{yr_lo}-{yr_hi}"
                 )
-                if sel_cands and st.button(
-                    "Analyze open-source signal (AI + web search)"
-                ):
-                    with st.spinner("Characterizing public statements by year..."):
-                        st.session_state[rkey] = enricher_r.annual_signal(
-                            sel_cands[0]["name"],
-                            [c["pe_number"] for c in sel_cands],
-                            yr_lo, yr_hi,
+                # Semi-automatic, same rule as the other AI panels: an analysis
+                # this program and window has had before renders on arrival;
+                # only a new combination costs a call. This one is the most
+                # expensive AI action in the app — a multi-year grounded
+                # research prompt fires several billable search queries — so
+                # never run it implicitly.
+                uid_r = current_user_id()
+                sig_res = None
+                if sel_cands:
+                    sig_res = enricher_r.annual_signal(
+                        sel_cands[0]["name"],
+                        [c["pe_number"] for c in sel_cands],
+                        yr_lo, yr_hi, user_id=uid_r, allow_fresh=False,
+                    )
+                    label = ("Analyze open-source signal (AI + web search)"
+                             if sig_res.cold
+                             else "Re-run analysis (AI + web search)")
+                    if st.button(label):
+                        was_cold = sig_res.cold
+                        with st.spinner(
+                                "Characterizing public statements by year..."):
+                            sig_res = enricher_r.annual_signal(
+                                sel_cands[0]["name"],
+                                [c["pe_number"] for c in sel_cands],
+                                yr_lo, yr_hi, user_id=uid_r, allow_fresh=True,
+                                force=not was_cold,
+                            )
+                    if sig_res.blocked:
+                        st.info(sig_res.message)
+                    elif not sig_res.grounded:
+                        st.warning(
+                            "The web search didn't run for this program, so "
+                            "there's no sourced basis for a rhetoric signal. "
+                            "Rather than correlate funding against numbers the "
+                            "model recalled, this shows nothing. Try a "
+                            "higher-profile program or a narrower year window."
                         )
-                sig_rows = st.session_state.get(rkey)
+                    if sig_res.search_suggestions_html:
+                        st.html(sig_res.search_suggestions_html)
+                    if sig_res.cached and sig_res.created_at:
+                        st.caption(f"Saved analysis from "
+                                   f"{sig_res.created_at:%Y-%m-%d}.")
+                # None means "nothing to render here" - a cold panel shows its
+                # button, and a refused call already showed the governor's
+                # message, so neither should fall through to the "could not
+                # characterize this program" note below.
+                sig_rows = (sig_res.payload
+                            if sig_res and not sig_res.cold
+                            and not sig_res.blocked
+                            and sig_res.grounded else None)
                 if sig_rows is not None and sel_cands:
                     if not sig_rows:
                         st.info(
@@ -904,13 +1053,23 @@ with tab_coverage:
     s3.metric("Programs with narratives", f"{stats['narrative_pes']:,}")
     s4.metric("Work line items", f"{stats['accomplishments']:,}")
 
+    try:
+        from analysis.ai_budget import SpendLedger
+        used = SpendLedger.fresh_calls_this_month(current_user_id())
+        allowance = config_module.AI_FREE_CREDITS_PER_MONTH
+        if allowance is not None:
+            st.caption(f"Fresh AI lookups used this month: "
+                       f"{used} of {allowance}. Saved analysis is unlimited.")
+    except Exception:
+        pass
+
     st.markdown(f"""
 | Source | Coverage | How it's used |
 |---|---|---|
 | **R-1 budget exhibits** (comptroller.war.gov) | FY1998–FY2027 requests; FY2026 enacted. Official XLSX for FY2012+; parsed PDFs before that | Funding trends and program funding histories (local database) |
 | **R-2 justification books** (official XML) | Defense-Wide components, PB2026–PB2027: {stats['narratives']:,} narratives, {stats['accomplishments']:,} accomplishment line items | Mission descriptions and "Plans & Work"; also sharpens program matching |
 | **USAspending.gov** (live queries) | Prime awards (contracts + grants/cooperative agreements), subawards, account-level obligations | "Contracts & Awards" and "Who got paid" |
-| **AI enrichment** (optional) | Google-grounded search and match resolution | "In the News" and ambiguity resolution |
+| **AI enrichment** (optional) | Google-grounded search and match resolution | "In the News", "Rhetoric vs. Budget", and ambiguity resolution |
 
 **Known blind spots — an empty result is often one of these, not an error:**
 
@@ -920,4 +1079,10 @@ with tab_coverage:
 - **Timing:** DoD awards post with a ~90-day display delay, and the current fiscal year is always partial.
 - **Service justification books** (Army, Navy, Air Force) are published as PDF only — narratives currently cover Defense-Wide components. FY2025-and-earlier books are also PDF-only. Two broken links upstream: MDA's PB2027 and CYBERCOM's PB2026 XML (each covered by the other cycle).
 - **Classified programs** appear only as aggregate lines; the Intelligence Community publishes topline figures only.
+
+**How the AI features are stored and metered**
+
+- **Match resolution is shared.** It doesn't use web search, so once one person resolves an ambiguous name, everyone else's identical search resolves instantly and for free.
+- **Web-grounded results are yours alone.** "In the News" and "Rhetoric vs. Budget" run against Google Search, and Google's API terms allow those results to be shown only to the person who asked for them. They're saved to your own history, never pooled, and always displayed with Google's Search Suggestions.
+- **Fresh lookups are metered**, so a busy month can't run up an unbounded bill. Anything already analyzed keeps loading normally even after the allowance runs out.
 """)

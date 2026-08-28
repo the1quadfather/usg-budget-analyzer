@@ -77,6 +77,47 @@ setx GEMINI_API_KEY "your-key"     # Windows; export on Linux/macOS
 no key file, config entry, or Docker build argument for it, and `.env` files
 are gitignored as a guardrail. Don't commit credentials in any form.
 
+### AI cost control
+
+Every AI call is cached, metered, and capped. Results that have been fetched
+before render as soon as you open the tab; only genuinely new lookups cost
+anything, and a monthly ceiling stops fresh calls before a bill can run away.
+Knobs live in `config.py` (`AI_MONTHLY_BUDGET_USD`, `AI_FREE_CREDITS_PER_MONTH`,
+`AI_CACHE_TTL_DAYS`).
+
+```bash
+python -m analysis.ai_budget --report          # month-to-date spend by task
+python -m analysis.ai_budget --prune           # drop expired cache rows
+python -m analysis.ai_budget --reset-runtime   # clear ALL runtime rows (see below)
+python analysis/ai_budget_eval.py              # self-check: cost math + caching rules
+```
+
+**Run `--reset-runtime` before committing.** The SQLite database is tracked in this
+public repository, so a dev session's cached AI results, spend ledger, and search log
+would otherwise be published — and grounded search results must never be. The command
+clears those four tables and VACUUMs the file so deleted rows are not merely unlinked.
+
+Warm the cache ahead of time so the app opens with analysis already in place.
+It picks targets from real search demand first, then the largest programs:
+
+```bash
+python analysis/ai_precompute.py --limit 20 --dry-run   # show the worklist
+python analysis/ai_precompute.py --limit 20             # warm it
+```
+
+**Two rules the code enforces, both from the
+[Gemini API terms](https://ai.google.dev/gemini-api/terms):**
+
+- Results grounded in Google Search are stored **per user and never shared**,
+  and always render with Google's Search Suggestions. Match resolution, which
+  doesn't use search, is shared across everyone — so a program someone else
+  already resolved costs you nothing.
+- Web-grounded features **verify that the search actually ran**. This model
+  will happily answer a "find recent coverage" prompt from memory, producing
+  invented outlets and dates that look identical to real ones. When no search
+  happened, the app shows nothing and says why rather than presenting
+  recollection as sourced reporting.
+
 ## Quickstart (Docker)
 
 ```bash
@@ -134,7 +175,9 @@ already in the shipped database.
   Budget signal is an LLM characterization grounded in web search, not a
   media-analytics count; its alignment coefficient is a Spearman rank
   correlation at 0–2-year funding leads and refuses to compute on fewer
-  than 4 overlapping years.
+  than 4 overlapping years. Both web-grounded features discard output the
+  model produced without actually searching, so an empty panel means "nothing
+  retrieved," never "here's what I vaguely recall."
 
 ## Project layout
 

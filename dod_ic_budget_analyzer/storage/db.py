@@ -115,6 +115,88 @@ class PEAccomplishment(Base):
     source_file: Mapped[str] = mapped_column(String(255))
 
 
+class AICache(Base):
+    """
+    Shared, cross-user cache of AI results.
+
+    ONLY non-grounded results belong here. Results produced with Grounding with
+    Google Search may be shown "only to the end user who submitted the prompt"
+    and may not be cached or resold, so they go to AIUserHistory instead. The
+    invariant is enforced in analysis/ai_budget.AICache.put().
+    """
+    __tablename__ = "ai_cache"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    cache_key: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    task: Mapped[str] = mapped_column(String(50), index=True)
+    params_json: Mapped[str] = mapped_column(Text)
+    model: Mapped[str] = mapped_column(String(100))
+    prompt_version: Mapped[int] = mapped_column(Integer, default=1)
+    payload_json: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow, index=True)
+    expires_at: Mapped[datetime] = mapped_column(index=True)
+
+
+class AIUserHistory(Base):
+    """
+    Per-user store for grounded results — the narrow carve-out the Gemini API
+    terms allow (a user may see their own history). Never served to a different
+    user, and never retained beyond config.GROUNDED_HISTORY_MAX_DAYS.
+    """
+    __tablename__ = "ai_user_history"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = mapped_column(String(128), index=True)
+    cache_key: Mapped[str] = mapped_column(String(64), index=True)
+    task: Mapped[str] = mapped_column(String(50), index=True)
+    params_json: Mapped[str] = mapped_column(Text)
+    model: Mapped[str] = mapped_column(String(100))
+    payload_json: Mapped[str] = mapped_column(Text)
+    search_suggestions_html: Mapped[Optional[str]] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow, index=True)
+    expires_at: Mapped[datetime] = mapped_column(index=True)
+
+
+class AISpend(Base):
+    """
+    One row per AI call attempt — the ledger that makes unit economics knowable.
+    Token counts come from the response's usage metadata and search_queries from
+    grounding metadata, so costs are measured rather than guessed. Cache hits are
+    logged too (with zero cost) so hit rate is computable.
+    """
+    __tablename__ = "ai_spend"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    ts: Mapped[datetime] = mapped_column(default=datetime.utcnow, index=True)
+    user_id: Mapped[str] = mapped_column(String(128), index=True, default="local")
+    task: Mapped[str] = mapped_column(String(50), index=True)
+    model: Mapped[str] = mapped_column(String(100))
+    input_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    output_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    thought_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    search_queries: Mapped[int] = mapped_column(Integer, default=0)
+    est_cost_usd: Mapped[float] = mapped_column(Float, default=0.0)
+    cache_hit: Mapped[int] = mapped_column(Integer, default=0)  # 0/1
+    ok: Mapped[int] = mapped_column(Integer, default=1)         # 0 when the call failed
+
+
+class SearchLog(Base):
+    """
+    Every Program Finder query, so precompute can follow real demand instead of
+    guessing which programs matter. Also the harvest pool for expanding the
+    golden eval set (see analysis/linker_eval.py).
+    """
+    __tablename__ = "search_log"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    ts: Mapped[datetime] = mapped_column(default=datetime.utcnow, index=True)
+    user_id: Mapped[str] = mapped_column(String(128), default="local")
+    query: Mapped[str] = mapped_column(String(500), index=True)
+    matched_pe: Mapped[Optional[str]] = mapped_column(String(50))
+    agency: Mapped[Optional[str]] = mapped_column(String(100))
+    needs_review: Mapped[int] = mapped_column(Integer, default=0)
+
+
 def get_engine(db_uri: str) -> Engine:
     """
     Creates and returns a SQLAlchemy Engine instance.

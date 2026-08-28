@@ -113,6 +113,56 @@ GAO_CATEGORIES = [
 GEMINI_MODEL = "gemini-3.6-flash"
 GEMINI_API_KEY_ENV_VARS = ("GEMINI_API_KEY", "GOOGLE_API_KEY")
 
+# ── AI cost model & spend governance ──────────────────────────────────────────
+# Published rates (verified 2026-08-25 against ai.google.dev/gemini-api/docs/pricing).
+# Token prices are USD per 1M tokens. Google's posted step-up on 2027-01-01 is
+# encoded here so the switchover is a date change, not a code change.
+GEMINI_PRICING = {
+    "gemini-3.6-flash": {
+        "input": 0.75,
+        "output": 3.75,
+        "input_after": 1.50,
+        "output_after": 7.50,
+        "step_up_date": "2027-01-01",
+    },
+}
+# Fallback rates for a model not in the table above — deliberately the higher
+# post-step-up numbers, so an unknown model over-estimates rather than under.
+GEMINI_PRICING_FALLBACK = {"input": 1.50, "output": 7.50}
+
+# Grounding with Google Search is billed per search query EXECUTED (Gemini 3.x),
+# not per API call — one prompt can fire several queries.
+GROUNDING_USD_PER_1K = 14.0
+GROUNDING_FREE_QUERIES_PER_MONTH = 5000
+
+# Hard ceiling on live AI spend per calendar month. When month-to-date spend
+# reaches it, cached and precomputed content still renders; only fresh calls
+# stop. Set to 0.0 to disable all live calls (useful for testing the degraded
+# path). None means "no ceiling" — not recommended in a hosted deployment.
+AI_MONTHLY_BUDGET_USD = 25.0
+
+# Fresh (cache-miss) AI actions allowed per user per calendar month on the free
+# tier. Cached reads are unlimited and cost nothing.
+AI_FREE_CREDITS_PER_MONTH = 5
+
+# Cache lifetimes per task, in days. Grounded tasks are NOT shared-cacheable
+# (see analysis/ai_budget.py) — these TTLs apply to the per-user history the
+# Gemini API terms permit.
+AI_CACHE_TTL_DAYS = {
+    "adjudicate": 365,           # deterministic at temperature 0
+    "find_open_source_hits": 14,  # news goes stale
+    "annual_signal": 90,          # budget cycles are annual
+}
+
+# Tasks whose results come from Grounding with Google Search. Per the Gemini API
+# Additional Terms these must never enter a cross-user cache: results may be
+# shown "only to the end user who submitted the prompt", and callers may not
+# "cache, frame, syndicate, resell, analyze, train on, or otherwise learn from"
+# them. The narrow carve-out permits storing the text for that same user (e.g.
+# their own history) for up to two years.
+GROUNDED_TASKS = frozenset({"find_open_source_hits", "annual_signal"})
+GROUNDED_HISTORY_MAX_DAYS = 730  # the two-year ceiling the terms allow
+
 # ── HTTP Client Defaults ──────────────────────────────────────────────────────
 HTTP_TIMEOUT = 30           # seconds
 HTTP_RETRY_ATTEMPTS = 3
