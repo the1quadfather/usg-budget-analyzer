@@ -107,6 +107,13 @@ RETRY_STATUS = {429, 500, 502, 503, 504}
 RETRY_ATTEMPTS = 5
 WAYBACK_DELAY = 5.0
 
+# secnav.navy.mil serves at ~0.4 MB/s and starts timing out entirely once a
+# backfill has been pulling from it for a while. These are public government
+# servers, so pace every host between files, and back off on retries there too
+# rather than immediately re-issuing a request that just timed out.
+HOST_DELAY = 2.0
+RETRY_DELAY = 20.0
+
 
 def _client() -> httpx.Client:
     return httpx.Client(headers=BROWSER_HEADERS, timeout=TIMEOUT,
@@ -239,11 +246,13 @@ def download(client: httpx.Client, url: str, dest: Path,
     logger.info(f"{dest.name}: downloading")
     is_archive = "web.archive.org" in url
     body = None
+    base_delay = WAYBACK_DELAY if is_archive else RETRY_DELAY
     for attempt in range(1, RETRY_ATTEMPTS + 1):
-        if is_archive and attempt > 1:
-            # Exponential backoff with jitter; the archive returns 503 for a
-            # while after it decides a client is going too fast.
-            wait = WAYBACK_DELAY * (2 ** (attempt - 1)) + random.uniform(0, 3)
+        if attempt > 1:
+            # Exponential backoff with jitter, for every host. The archive
+            # returns 503 for a while after deciding a client is going too
+            # fast; the Navy host simply stops responding.
+            wait = base_delay * (2 ** (attempt - 1)) + random.uniform(0, 3)
             logger.info(f"{dest.name}: retry {attempt}/{RETRY_ATTEMPTS} "
                         f"in {wait:.0f}s")
             time.sleep(wait)
@@ -264,8 +273,7 @@ def download(client: httpx.Client, url: str, dest: Path,
     if body is None:
         logger.error(f"{dest.name}: FAILED after {RETRY_ATTEMPTS} attempts")
         return None
-    if is_archive:
-        time.sleep(WAYBACK_DELAY)
+    time.sleep(WAYBACK_DELAY if is_archive else HOST_DELAY)
     if body[:4] != b"%PDF":
         logger.error(f"{dest.name}: not a PDF (got {body[:16]!r})")
         return None
