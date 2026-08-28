@@ -165,10 +165,14 @@ already in the shipped database.
 - **R-1 exhibits** (comptroller.war.gov): official XLSX for FY2012–FY2027,
   parsed PDFs for FY1998–FY2011. Discretionary and reconciliation/mandatory
   funds are kept as separate streams.
-- **R-2 justification books**: official DTIC-schema XML, published from the
-  PB2026 cycle onward, Defense-Wide components only (the services publish
-  PDF-only). Mission descriptions, projects, and per-year accomplishment
-  line items with funding.
+- **R-2 justification books**: Defense-Wide via official DTIC-schema XML
+  (PB2026 cycle onward), and Army/Navy via the PDF books those departments
+  publish — parsed from the PDF text layer, which prints the program element
+  verbatim in every exhibit header, so the join is exact rather than fuzzy.
+  Mission descriptions, projects, and per-year accomplishment line items.
+  Narrative coverage is 740 of 2,055 program elements (36%); Air Force and
+  Space Force are still missing because their host aborts the TLS handshake
+  for every client, and the only alternative is a third-party archive.
 - **NDAA authorization committee reports** (govinfo.gov): the RDT&E funding
   tables printed in HASC/SASC reports, parsed to per-program-element
   requested / committee change / authorized figures plus the committee's own
