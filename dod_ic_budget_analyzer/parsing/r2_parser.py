@@ -47,6 +47,12 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
+# The only component strings program_elements uses; anything else is an
+# ingestion artifact, never a real agency.
+KNOWN_COMPONENTS = frozenset({
+    "Army", "Navy", "Air Force", "Space Force", "Defense-Wide", "OT&E",
+})
+
 # Year buckets under Accomplishment (actuals) and PlannedProgram (plans)
 # -> (label, offset from budget cycle year). BudgetYearOneBase is skipped:
 # it duplicates BudgetYearOne in the post-OCO era.
@@ -109,6 +115,17 @@ class R2Parser:
             pe_title = _direct_text(pe, "ProgramElementTitle")
             appropriation = _direct_text(pe, "AppropriationName")
             agency = NativeR1Parser._normalise_component(appropriation or "Defense-Wide")
+            # _normalise_component falls back to raw.title() for anything it does
+            # not recognise, so an appropriation name leaks through as an agency
+            # -- that is how 'Creating Helpful Incentives To Produce
+            # Semi-Conductors (Chips) For America' ended up filed as a component
+            # for three PEs. The codebase joins on (pe_number, agency), so a
+            # bogus agency silently orphans every downstream row. This feed is
+            # Defense-Wide, so clamp anything unrecognised to that.
+            if agency not in KNOWN_COMPONENTS:
+                logger.debug(f"{pe_number}: unrecognised component "
+                             f"{agency!r} from {appropriation!r}; using Defense-Wide")
+                agency = "Defense-Wide"
             fy = fiscal_year or int(_direct_text(pe, "BudgetYear") or 0)
 
             common = {

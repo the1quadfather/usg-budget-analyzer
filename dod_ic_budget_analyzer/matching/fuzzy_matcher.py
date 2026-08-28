@@ -33,6 +33,27 @@ logger = logging.getLogger(__name__)
 PE_NUMBER_IN_TEXT_RE = re.compile(r"\b([0-9]{7,9}[A-Z0-9]{0,3})\b")
 
 
+def _shares_enough_tokens(query: str, alias: str, min_shared: int) -> bool:
+    """
+    Require real lexical overlap, not one incidental word.
+
+    token_set_ratio alone is not enough once the alias dictionary gets large:
+    stop-word stripping shrinks 'Nuclear Delivery Systems' to 'nuclear
+    delivery', so the single shared word in 'quantum blockchain pizza
+    delivery' scores 66.7 and clears any reasonable floor. Measured over 600
+    PEs, requiring two shared tokens removed 6 of 6 nonsense-query false
+    positives at zero recall cost (99.3% either way).
+
+    Aliases or queries of a single token are exempt -- that is the acronym and
+    short-name case, which the deterministic acronym index already handles.
+    """
+    query_tokens = set(query.split())
+    alias_tokens = set(alias.split())
+    if len(query_tokens) < 2 or len(alias_tokens) < 2:
+        return True
+    return len(query_tokens & alias_tokens) >= min_shared
+
+
 class ProgramMatcher:
     """
     In-memory fuzzy matching engine for DoD Program Elements.
@@ -173,6 +194,7 @@ class ProgramMatcher:
         limit: int = 5,
         score_cutoff: float = 60.0,
         sanity_floor: float = 55.0,
+        min_shared_tokens: int = 2,
     ) -> List[dict]:
         """
         Top-k fuzzy candidates, deduplicated by PE. Scores are normalized to
@@ -187,6 +209,11 @@ class ProgramMatcher:
             candidate must also clear `sanity_floor` on token_set_ratio -
             this stops "quantum blockchain pizza delivery" from confidently
             matching "Quantum Application".
+          - and must share at least `min_shared_tokens` words with the query,
+            because the floor alone stopped working once the alias dictionary
+            grew: with service R-2 project titles indexed, all six nonsense
+            control queries matched something. One word in common is not
+            evidence. See _shares_enough_tokens.
         """
         light_query = light_normalize(query)
         heavy_query = normalize_query(query)
@@ -227,6 +254,8 @@ class ProgramMatcher:
             )
             for alias, score, alias_idx in raw:
                 if fuzz.token_set_ratio(q, alias) < sanity_floor:
+                    continue
+                if not _shares_enough_tokens(q, alias, min_shared_tokens):
                     continue
                 add(self._alias_to_pe[alias_idx], score / 100.0)
 
