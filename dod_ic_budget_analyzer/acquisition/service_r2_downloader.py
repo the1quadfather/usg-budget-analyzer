@@ -79,6 +79,16 @@ BROWSER_HEADERS: Dict[str, str] = {
 }
 
 ARMY_INDEX = "https://www.asafm.army.mil/Budget-Materials/"
+
+# Air Force and Space Force publish to a host whose edge aborts the TLS
+# handshake for every client, so the only route to their books is the Wayback
+# Machine. `id_` returns the archived bytes unmodified rather than a rewritten
+# page. Snapshot coverage runs FY2018-FY2024; newer books are not archived.
+CDX_URL = "https://web.archive.org/cdx/search/cdx"
+WAYBACK_RAW = "https://web.archive.org/web/{timestamp}id_/{url}"
+AF_DOMAIN = "saffm.hq.af.mil"
+AF_ARCHIVE_FIRST_FY, AF_ARCHIVE_LAST_FY = 2018, 2024
+_cdx_cache: Dict[str, list] = {}
 NAVY_BOOKS = [
     "RDTEN_BA1-3_Book.pdf", "RDTEN_BA4_Book.pdf", "RDTEN_BA5_Book.pdf",
     "RDTEN_BA6_Book.pdf", "RDTEN_BA7-8_Book.pdf",
@@ -141,7 +151,66 @@ def discover_navy(client: httpx.Client, fiscal_year: int) -> List[Tuple[str, str
     return found
 
 
-DISCOVERERS = {"army": discover_army, "navy": discover_navy}
+def _af_archive_index(client: httpx.Client) -> Dict[str, tuple]:
+    """
+    Every archived Air Force / Space Force RDT&E book, newest snapshot per file.
+
+    The `?ver=` query strings the CMS appends make the same document appear
+    many times, so entries are deduplicated on the path before the query
+    string and the most recent capture of each is kept.
+    """
+    if "af" in _cdx_cache:
+        return _cdx_cache["af"]
+    params = {
+        "url": AF_DOMAIN, "matchType": "domain", "output": "json",
+        "collapse": "urlkey", "filter": ["statuscode:200",
+                                         "mimetype:application/pdf"],
+        "limit": "40000",
+    }
+    rows = client.get(CDX_URL, params=params).json()
+    header, data = rows[0], rows[1:]
+    ts_i, url_i = header.index("timestamp"), header.index("original")
+
+    best: Dict[str, tuple] = {}
+    for row in data:
+        original = row[url_i]
+        if not re.search(r"rdt", original, re.IGNORECASE):
+            continue
+        path = original.split("?")[0]
+        if path not in best or row[ts_i] > best[path][0]:
+            best[path] = (row[ts_i], original)
+    _cdx_cache["af"] = best
+    logger.info(f"Wayback: {len(best)} archived Air Force/Space Force RDT&E books")
+    return best
+
+
+def discover_air_force(client: httpx.Client,
+                       fiscal_year: int) -> List[Tuple[str, str]]:
+    """
+    Archived Air Force and Space Force books for one fiscal year.
+
+    Both services share this host and this listing; which one a book belongs to
+    is read from its own exhibit banner at parse time rather than guessed from
+    the filename.
+    """
+    if not AF_ARCHIVE_FIRST_FY <= fiscal_year <= AF_ARCHIVE_LAST_FY:
+        logger.info(f"air force FY{fiscal_year}: outside archived coverage "
+                    f"(FY{AF_ARCHIVE_FIRST_FY}-FY{AF_ARCHIVE_LAST_FY})")
+        return []
+
+    yy = f"{fiscal_year % 100:02d}"
+    found: List[Tuple[str, str]] = []
+    for path, (timestamp, original) in _af_archive_index(client).items():
+        if not re.search(rf"/FY[-_ ]?{yy}\b", path, re.IGNORECASE):
+            continue
+        name = unquote(Path(path).name).replace(" ", "_").replace("%20", "_")
+        found.append((WAYBACK_RAW.format(timestamp=timestamp, url=original),
+                      f"af_fy{fiscal_year}_{name}"))
+    return sorted(found, key=lambda p: p[1])
+
+
+DISCOVERERS = {"army": discover_army, "navy": discover_navy,
+               "airforce": discover_air_force}
 
 
 def download(client: httpx.Client, url: str, dest: Path,
@@ -202,6 +271,7 @@ def harvest(services: List[str], years: List[int], dest: Path,
     narratives: List[dict] = []
     accomplishments: List[dict] = []
     report: List[dict] = []
+    harvested: set = set()
 
     with _client() as client:
         for service in services:
@@ -223,6 +293,9 @@ def harvest(services: List[str], years: List[int], dest: Path,
                     continue
 
                 for url, name in books:
+                    if name in harvested:
+                        continue
+                    harvested.add(name)
                     pdf = download(client, url, dest / name, refresh=refresh)
                     if pdf is None:
                         continue
@@ -252,7 +325,8 @@ def harvest(services: List[str], years: List[int], dest: Path,
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--service", nargs="+", default=["army", "navy"],
+    parser.add_argument("--service", nargs="+",
+                        default=["army", "navy", "airforce"],
                         choices=sorted(DISCOVERERS),
                         help="which departments to harvest")
     parser.add_argument("--years", nargs="+", type=int, required=True,
