@@ -197,6 +197,46 @@ class SearchLog(Base):
     needs_review: Mapped[int] = mapped_column(Integer, default=0)
 
 
+class PECongressionalAction(Base):
+    """
+    Authorization-committee action on a single Program Element, parsed from the
+    RDT&E funding tables printed in HASC/SASC NDAA committee reports.
+
+    These are public-domain government works (17 U.S.C. 105), so unlike Gemini
+    Grounded Results they may be cached, analyzed, and resold freely.
+
+    A PE can legitimately appear more than once in one report under different
+    budget activities (e.g. 0604201F carries separate 18,041 and 163,156 lines
+    in H. Rept. 118-125), so `line_number` is part of the natural key and
+    amounts must never be summed blindly across rows.
+
+    Machine-readable tables begin at FY2012; earlier reports print the same
+    tables as GRAPHIC images, so coverage is roughly half the funding history.
+    Disclose that wherever this data is surfaced.
+    """
+    __tablename__ = "pe_congressional_actions"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    pe_number: Mapped[str] = mapped_column(String(50), index=True)
+    agency: Mapped[str] = mapped_column(String(100), index=True)
+    fiscal_year: Mapped[int] = mapped_column(Integer, index=True)
+    chamber: Mapped[str] = mapped_column(String(16), index=True)  # 'House' | 'Senate'
+    report_citation: Mapped[str] = mapped_column(String(64), index=True)
+    line_number: Mapped[str] = mapped_column(String(10))
+    program_title: Mapped[str] = mapped_column(String(500))
+    budget_activity_title: Mapped[Optional[str]] = mapped_column(String(200))
+    request_k: Mapped[Optional[float]] = mapped_column(Float)
+    committee_delta_k: Mapped[Optional[float]] = mapped_column(Float)
+    authorized_k: Mapped[Optional[float]] = mapped_column(Float)
+    rationale: Mapped[Optional[str]] = mapped_column(Text)
+    # 1 when pe_number is a 9999... classified placeholder rather than a real PE
+    is_classified: Mapped[int] = mapped_column(Integer, default=0)
+    # 1 when request_k matched the FY's 'CY Request' funding line for this PE
+    reconciled: Mapped[int] = mapped_column(Integer, default=0, index=True)
+    content_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    ingested_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
+
+
 def get_engine(db_uri: str) -> Engine:
     """
     Creates and returns a SQLAlchemy Engine instance.
