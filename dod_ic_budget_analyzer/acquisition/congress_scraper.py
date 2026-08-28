@@ -134,7 +134,11 @@ SUFFIX_AGENCY = {
 }
 
 # Agency strings in program_elements that are ingestion artifacts, never a
-# real answer. See the 'Chips' rows noted in the project handoff.
+# real answer. Verified 2026-08-28: program_elements holds only the five
+# services plus 'Defense-Wide', 'OT&E', and 8 'Unknown' rows. The junk
+# 'Creating Helpful Incentives To Produce Semi-Conductors...' agency the
+# handoff warns about lives in pe_narratives/pe_accomplishments, NOT here, so
+# it cannot reach this lookup.
 JUNK_AGENCIES = {"Unknown", ""}
 
 

@@ -15,7 +15,7 @@ context. Everything runs locally against a SQLite database.
 |---|---|
 | **Budget Trends** | How has RDT&E funding moved by component, FY1998–FY2027? Who got paid from each appropriation account? |
 | **Program Finder** | Which budget program is this name / news quote / PE number? Then a full profile: funding history, official plans & reported work, contract awards, recent coverage |
-| **Rhetoric vs. Budget** | Did the money follow the talk? AI-characterized public emphasis correlated against the funding trajectory, with a lead-aware alignment coefficient |
+| **Rhetoric vs. Budget** | Did the money follow the talk? What was requested vs. what the authorizing committees actually authorized, with the reason they printed — an exact join, no API key. Optionally overlaid with AI-characterized public emphasis and a lead-aware alignment coefficient |
 | **Data Coverage** | What's ingested, what's live-queried, and the known blind spots |
 
 Program matching is multi-stage: exact PE-number lookup, lexical matching
@@ -59,14 +59,17 @@ streamlit run app.py
 ```
 
 The repository ships with the processed database (FY1998–FY2027 R-1 funding,
-PB2026–PB2027 Defense-Wide narratives), so the app is useful immediately.
+PB2026–PB2027 Defense-Wide narratives, and FY2022/FY2024/FY2026 House
+authorization actions), so the app is useful immediately.
 The first Program Finder search downloads the sentence-transformer model
 (one time, ~90MB).
 
 ### Optional: AI features
 
 Set a Gemini API key to enable ambiguity resolution, "In the News," and the
-Rhetoric vs. Budget tab:
+optional open-source-emphasis layer on the Rhetoric vs. Budget tab. The
+congressional requested-vs-authorized figures on that tab need **no key** and
+cost nothing per user:
 
 ```bash
 setx GEMINI_API_KEY "your-key"     # Windows; export on Linux/macOS
@@ -165,6 +168,16 @@ already in the shipped database.
   PB2026 cycle onward, Defense-Wide components only (the services publish
   PDF-only). Mission descriptions, projects, and per-year accomplishment
   line items with funding.
+- **NDAA authorization committee reports** (govinfo.gov): the RDT&E funding
+  tables printed in HASC/SASC reports, parsed to per-program-element
+  requested / committee change / authorized figures plus the committee's own
+  stated reason. Key-free and, as US Government works (17 U.S.C. 105), public
+  domain. **Machine-readable tables begin at FY2012** — earlier reports print
+  them as GRAPHIC images, so an absent year means "not available," not "no
+  action taken." A program element can hold several lines in one report (one
+  per budget activity); those are summed per fiscal year, while House and
+  Senate are never pooled because they score the same request separately.
+  Authorization is not appropriation.
 - **USAspending.gov**: live queries. Public award records carry **no
   program-element linkage**, so program-level award search is keyword
   matching — the UI labels it "leads, not a ledger." Other Transactions
