@@ -59,8 +59,9 @@ streamlit run app.py
 ```
 
 The repository ships with the processed database (FY1998–FY2027 R-1 funding,
-PB2026–PB2027 Defense-Wide narratives, and FY2022/FY2024/FY2026 House
-authorization actions), so the app is useful immediately.
+PB2026–PB2027 Defense-Wide narratives, and 26,544 congressional
+authorization actions from 30 NDAA committee reports covering FY2012–FY2027
+in both chambers), so the app is useful immediately.
 The first Program Finder search downloads the sentence-transformer model
 (one time, ~90MB).
 
