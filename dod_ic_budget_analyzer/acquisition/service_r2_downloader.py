@@ -40,9 +40,11 @@ Usage::
 
 import argparse
 import logging
+import random
 import re
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 from urllib.parse import unquote, urljoin
@@ -96,7 +98,14 @@ NAVY_BOOKS = [
 NAVY_URL = "https://www.secnav.navy.mil/fmc/fmb/Documents/{yy}pres/{book}"
 
 # Navy books are tens of MB at ~0.4 MB/s.
-TIMEOUT = httpx.Timeout(connect=30.0, read=600.0, write=60.0, pool=30.0)
+TIMEOUT = httpx.Timeout(connect=30.0, read=900.0, write=60.0, pool=30.0)
+
+# The Wayback Machine throttles rapid sequential fetches with 503s -- a
+# single manual fetch succeeds while a backfill loop gets refused on every
+# request. Retry with backoff and space the requests out.
+RETRY_STATUS = {429, 500, 502, 503, 504}
+RETRY_ATTEMPTS = 5
+WAYBACK_DELAY = 5.0
 
 
 def _client() -> httpx.Client:
@@ -228,14 +237,35 @@ def download(client: httpx.Client, url: str, dest: Path,
         return dest
 
     logger.info(f"{dest.name}: downloading")
-    try:
-        response = client.get(url)
-        response.raise_for_status()
-    except Exception as exc:
-        logger.error(f"{dest.name}: FAILED {exc}")
+    is_archive = "web.archive.org" in url
+    body = None
+    for attempt in range(1, RETRY_ATTEMPTS + 1):
+        if is_archive and attempt > 1:
+            # Exponential backoff with jitter; the archive returns 503 for a
+            # while after it decides a client is going too fast.
+            wait = WAYBACK_DELAY * (2 ** (attempt - 1)) + random.uniform(0, 3)
+            logger.info(f"{dest.name}: retry {attempt}/{RETRY_ATTEMPTS} "
+                        f"in {wait:.0f}s")
+            time.sleep(wait)
+        try:
+            response = client.get(url)
+            if response.status_code in RETRY_STATUS:
+                logger.warning(f"{dest.name}: HTTP {response.status_code}")
+                continue
+            response.raise_for_status()
+            body = response.content
+            break
+        except httpx.HTTPStatusError as exc:
+            logger.error(f"{dest.name}: FAILED {exc}")
+            return None
+        except Exception as exc:
+            logger.warning(f"{dest.name}: {type(exc).__name__} {exc}")
+            continue
+    if body is None:
+        logger.error(f"{dest.name}: FAILED after {RETRY_ATTEMPTS} attempts")
         return None
-
-    body = response.content
+    if is_archive:
+        time.sleep(WAYBACK_DELAY)
     if body[:4] != b"%PDF":
         logger.error(f"{dest.name}: not a PDF (got {body[:16]!r})")
         return None
