@@ -50,10 +50,14 @@ from typing import Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
-# Page header opening either exhibit type, e.g.
-# 'Exhibit R-2A, RDT&E Project Justification: PB 2027 Army'
+# Page header opening either exhibit type. The year is prefixed 'PB' in the
+# modern books and 'FY' in the older ones -- FY2018 Army and Navy books use
+# 'FY' exclusively, so a PB-only pattern parsed ZERO exhibits from every one of
+# them. e.g.
+#   'Exhibit R-2A, RDT&E Project Justification: PB 2027 Army'   (FY2019+)
+#   'Exhibit R-2, RDT&E Budget Item Justification: FY 2018 Army' (FY2018)
 RE_EXHIBIT = re.compile(
-    r"^Exhibit (R-2A?)\s*,\s*RDT&E [^:]*:\s*PB (\d{4})\s+(.+?)\s*$"
+    r"^Exhibit (R-2A?)\s*,\s*RDT&E [^:]*:\s*(?:PB|FY)\s*(\d{4})\s+(.+?)\s*$"
 )
 
 # Column label row of the header block.

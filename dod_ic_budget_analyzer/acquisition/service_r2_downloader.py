@@ -272,6 +272,7 @@ def harvest(services: List[str], years: List[int], dest: Path,
     accomplishments: List[dict] = []
     report: List[dict] = []
     harvested: set = set()
+    empty: List[str] = []
 
     with _client() as client:
         for service in services:
@@ -311,6 +312,13 @@ def harvest(services: List[str], years: List[int], dest: Path,
                                    "accomplishments": len(parsed["accomplishments"])})
                     unparsed = diag["pes_printed_but_unparsed"]
                     flag = f"  !! {len(unparsed)} PE(s) unparsed" if unparsed else ""
+                    # A book that yields nothing is the failure mode that
+                    # matters: the FY2018 books all parsed to zero because
+                    # their banner says 'FY 2018' where newer ones say
+                    # 'PB 2027'. Never let that scroll past as a quiet 0.
+                    if not diag["exhibits"]:
+                        flag = "  !! ZERO EXHIBITS - format not recognised"
+                        empty.append(name)
                     # flush: stdout is block-buffered when piped, and a
                     # multi-minute harvest that prints nothing looks hung.
                     print(f"  {name}: {diag['exhibits']} exhibits, "
@@ -319,8 +327,10 @@ def harvest(services: List[str], years: List[int], dest: Path,
                           f"{len(parsed['accomplishments'])} accomplishments{flag}",
                           flush=True)
 
+    if empty:
+        logger.error(f"{len(empty)} book(s) parsed to ZERO exhibits: {empty[:5]}")
     return {"narratives": narratives, "accomplishments": accomplishments,
-            "report": report}
+            "report": report, "empty": empty}
 
 
 def main() -> int:
@@ -351,6 +361,9 @@ def main() -> int:
 
     print(f"\nparsed {len(result['narratives'])} narratives, "
           f"{len(result['accomplishments'])} accomplishments")
+    if result["empty"]:
+        print(f"FAIL: {len(result['empty'])} book(s) yielded no exhibits at all "
+              f"-- {result['empty'][:5]}")
     if not args.ingest:
         print("(dry run - pass --ingest to write)")
         return 0
