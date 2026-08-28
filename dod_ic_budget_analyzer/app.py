@@ -851,25 +851,29 @@ with tab_rhetoric:
                     ca_series = ca.get_program_series(ca_pes, ca_agencies)
                     ca_rows = ca.get_actions(ca_pes, ca_agencies)
 
+                # House and Senate score the same request separately, so one
+                # chamber is chosen BEFORE anything is totalled. Summing both
+                # would report roughly double the real dollars.
+                if not ca_series.is_empty():
+                    chambers = sorted(ca_series["chamber"].unique().to_list())
+                    chamber_pick = chambers[0]
+                    if len(chambers) > 1:
+                        chamber_pick = st.radio(
+                            "Chamber", chambers, horizontal=True,
+                            key="rhet_chamber",
+                            help="Each chamber's committee scores the same "
+                                 "request on its own; the two are never added "
+                                 "together.",
+                        )
+                    ca_series = ca_series.filter(
+                        pl.col("chamber") == chamber_pick)
+                    ca_rows = ca_rows.filter(pl.col("chamber") == chamber_pick)
+
                 ca_sum = ca_summarize(ca_series)
                 st.markdown(ca_headline(display_name, ca_sum))
 
                 if ca_sum["years_covered"]:
                     cdf = ca_series.to_pandas()
-
-                    # House and Senate score the same request separately, so
-                    # they are never pooled — pick one when both are present.
-                    chambers = sorted(cdf["chamber"].unique())
-                    if len(chambers) > 1:
-                        chamber_pick = st.radio(
-                            "Chamber", chambers, horizontal=True,
-                            key="rhet_chamber",
-                        )
-                        cdf = cdf[cdf["chamber"] == chamber_pick]
-                        ca_sum = ca_summarize(
-                            ca_series.filter(
-                                pl.col("chamber") == chamber_pick)
-                        )
 
                     c1, c2, c3, c4 = st.columns(4)
                     c1.metric("Requested",
