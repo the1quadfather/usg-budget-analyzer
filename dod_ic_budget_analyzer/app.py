@@ -799,43 +799,190 @@ with tab_finder:
 with tab_rhetoric:
     st.header("Rhetoric vs. budget")
     st.markdown(
-        "Did the money follow the talk? Public emphasis on a program — "
-        "press briefings, testimony, trade coverage — characterized year by "
-        "year and correlated against its funding trajectory."
+        "Did the money follow the talk? What was requested, what the "
+        "authorizing committees actually authorized, and the reason they "
+        "printed for the change — plus, optionally, how loudly the program "
+        "was being talked about."
     )
-    enricher_r = get_enricher()
-    if enricher_r is None:
-        st.caption(
-            "AI lookups are disabled — set the GEMINI_API_KEY environment "
-            "variable and restart the app to enable this analysis."
-        )
-    else:
-        rq = st.text_input(
-            "Program to analyze", key="rhetoric_query",
-            placeholder="e.g. launched effects",
-        )
-        if rq:
-            with st.spinner("Finding the program..."):
-                linker = load_matching_models()
-                rres = linker.link_query(rq)
-            if not rres["matched_pe_id"]:
-                st.warning("No program match — try another name or a PE number.")
+
+    rq = st.text_input(
+        "Program to analyze", key="rhetoric_query",
+        placeholder="e.g. launched effects",
+    )
+    if rq:
+        with st.spinner("Finding the program..."):
+            linker = load_matching_models()
+            rres = linker.link_query(rq)
+        if not rres["matched_pe_id"]:
+            st.warning("No program match — try another name or a PE number.")
+        else:
+            rcands = rres["candidates"]
+            rlabels = [
+                f"PE {c['pe_number']} — {c['name'][:45]} [{c['agency']}]"
+                for c in rcands
+            ]
+            picked = st.multiselect(
+                "Programs to aggregate (related PEs sum into one "
+                "funding series)",
+                rlabels, default=rlabels[:1], key="rhet_pes",
+            )
+            yr_lo, yr_hi = st.slider(
+                "Analysis window", 2015, 2026, (2020, 2026),
+                key="rhet_years",
+            )
+            sel_cands = [rcands[rlabels.index(l)] for l in picked]
+            display_name = sel_cands[0]["name"] if sel_cands else ""
+
+            # ── What Congress actually did ────────────────────────────────
+            # Exact join against authorizing-committee reports. Public-domain
+            # source, no API key, no AI — so this renders on the free tier and
+            # costs nothing per user, unlike the grounded signal below.
+            if sel_cands:
+                from analysis.congressional_actions import (
+                    CongressionalActions, coverage_note,
+                    headline as ca_headline, summarize as ca_summarize,
+                )
+
+                st.subheader("What Congress authorized")
+                with SessionFactory() as session:
+                    ca = CongressionalActions(session)
+                    ca_pes = [c["pe_number"] for c in sel_cands]
+                    ca_agencies = [c["agency"] for c in sel_cands]
+                    ca_series = ca.get_program_series(ca_pes, ca_agencies)
+                    ca_rows = ca.get_actions(ca_pes, ca_agencies)
+
+                ca_sum = ca_summarize(ca_series)
+                st.markdown(ca_headline(display_name, ca_sum))
+
+                if ca_sum["years_covered"]:
+                    cdf = ca_series.to_pandas()
+
+                    # House and Senate score the same request separately, so
+                    # they are never pooled — pick one when both are present.
+                    chambers = sorted(cdf["chamber"].unique())
+                    if len(chambers) > 1:
+                        chamber_pick = st.radio(
+                            "Chamber", chambers, horizontal=True,
+                            key="rhet_chamber",
+                        )
+                        cdf = cdf[cdf["chamber"] == chamber_pick]
+                        ca_sum = ca_summarize(
+                            ca_series.filter(
+                                pl.col("chamber") == chamber_pick)
+                        )
+
+                    c1, c2, c3, c4 = st.columns(4)
+                    c1.metric("Requested",
+                              f"${ca_sum['total_requested_m']:,.1f}M")
+                    c2.metric("Authorized",
+                              f"${ca_sum['total_authorized_m']:,.1f}M")
+                    c3.metric(
+                        "Committee change",
+                        f"${ca_sum['net_delta_m']:+,.1f}M",
+                        delta=(f"{ca_sum['net_delta_pct']:+.1f}%"
+                               if ca_sum["net_delta_pct"] is not None else None),
+                    )
+                    c4.metric("Years on record",
+                              f"{ca_sum['years_covered']}")
+
+                    # The delta is the story: requested and authorized differ
+                    # by a few percent, so plotting them side by side would
+                    # bury the signal in two near-identical bars. Diverging
+                    # bar instead — sign carried by position AND hue.
+                    cdf["direction"] = [
+                        "Committee increase" if v is not None and v >= 0
+                        else "Committee cut"
+                        for v in cdf["delta_m"]
+                    ]
+                    zero_rule = (
+                        alt.Chart(pd.DataFrame({"y": [0]}))
+                        .mark_rule(color="#c9c7c2", strokeWidth=1)
+                        .encode(y="y:Q")
+                    )
+                    delta_bars = (
+                        alt.Chart(cdf)
+                        .mark_bar(cornerRadiusEnd=4, size=28)
+                        .encode(
+                            x=alt.X("fiscal_year:O", title="Fiscal Year"),
+                            y=alt.Y("delta_m:Q",
+                                    title="Committee change $M"),
+                            color=alt.Color(
+                                "direction:N",
+                                scale=alt.Scale(
+                                    domain=["Committee increase",
+                                            "Committee cut"],
+                                    range=["#2a78d6", "#e34948"]),
+                                legend=alt.Legend(title=None, orient="top"),
+                            ),
+                            tooltip=[
+                                alt.Tooltip("fiscal_year:O", title="FY"),
+                                alt.Tooltip("chamber:N", title="Chamber"),
+                                alt.Tooltip("request_m:Q", format=",.1f",
+                                            title="Requested $M"),
+                                alt.Tooltip("authorized_m:Q", format=",.1f",
+                                            title="Authorized $M"),
+                                alt.Tooltip("delta_m:Q", format="+,.1f",
+                                            title="Change $M"),
+                                alt.Tooltip("rationale_text:N",
+                                            title="Stated reason"),
+                            ],
+                        )
+                        .properties(height=220)
+                    )
+                    st.altair_chart(zero_rule + delta_bars,
+                                    use_container_width=True)
+
+                    biggest = ca_sum["largest_cut"] or ca_sum["largest_add"]
+                    if biggest and biggest.get("rationale"):
+                        st.caption(
+                            f"Largest single-year change — FY"
+                            f"{biggest['fiscal_year']}, "
+                            f"${biggest['amount_m']:+,.1f}M: "
+                            f"{biggest['rationale']}"
+                        )
+
+                    with st.expander("Line-by-line committee actions"):
+                        st.dataframe(
+                            ca_rows.to_pandas()[[
+                                "fiscal_year", "chamber", "pe_number",
+                                "program_title", "budget_activity_title",
+                                "request_k", "committee_delta_k",
+                                "authorized_k", "rationale",
+                                "report_citation",
+                            ]],
+                            use_container_width=True, hide_index=True,
+                            column_config={
+                                "fiscal_year": "FY",
+                                "chamber": "Chamber",
+                                "pe_number": "PE",
+                                "program_title": "Program",
+                                "budget_activity_title": "Budget activity",
+                                "request_k": st.column_config.NumberColumn(
+                                    "Requested $K", format="%,.0f"),
+                                "committee_delta_k": st.column_config
+                                    .NumberColumn("Change $K", format="%+,.0f"),
+                                "authorized_k": st.column_config.NumberColumn(
+                                    "Authorized $K", format="%,.0f"),
+                                "rationale": "Stated reason",
+                                "report_citation": "Report",
+                            },
+                        )
+                st.caption(coverage_note())
+
+            # ── Optional AI layer: open-source emphasis ───────────────────
+            st.divider()
+            st.subheader("Open-source emphasis (AI)")
+            enricher_r = get_enricher()
+            if enricher_r is None:
+                st.caption(
+                    "Optional — set the GEMINI_API_KEY environment variable "
+                    "and restart to add an AI-characterized signal for how "
+                    "much the program was publicly discussed. The "
+                    "congressional figures above need no key."
+                )
+            elif not sel_cands:
+                st.caption("Select at least one program element above.")
             else:
-                rcands = rres["candidates"]
-                rlabels = [
-                    f"PE {c['pe_number']} — {c['name'][:45]} [{c['agency']}]"
-                    for c in rcands
-                ]
-                picked = st.multiselect(
-                    "Programs to aggregate (related PEs sum into one "
-                    "funding series)",
-                    rlabels, default=rlabels[:1], key="rhet_pes",
-                )
-                yr_lo, yr_hi = st.slider(
-                    "Analysis window", 2015, 2026, (2020, 2026),
-                    key="rhet_years",
-                )
-                sel_cands = [rcands[rlabels.index(l)] for l in picked]
                 rkey = (
                     "rhet::" + "|".join(sorted(c["pe_number"] for c in sel_cands))
                     + f"::{yr_lo}-{yr_hi}"
@@ -847,50 +994,48 @@ with tab_rhetoric:
                 # research prompt fires several billable search queries — so
                 # never run it implicitly.
                 uid_r = current_user_id()
-                sig_res = None
-                if sel_cands:
-                    sig_res = enricher_r.annual_signal(
-                        sel_cands[0]["name"],
-                        [c["pe_number"] for c in sel_cands],
-                        yr_lo, yr_hi, user_id=uid_r, allow_fresh=False,
-                    )
-                    label = ("Analyze open-source signal (AI + web search)"
-                             if sig_res.cold
-                             else "Re-run analysis (AI + web search)")
-                    if st.button(label):
-                        was_cold = sig_res.cold
-                        with st.spinner(
-                                "Characterizing public statements by year..."):
-                            sig_res = enricher_r.annual_signal(
-                                sel_cands[0]["name"],
-                                [c["pe_number"] for c in sel_cands],
-                                yr_lo, yr_hi, user_id=uid_r, allow_fresh=True,
-                                force=not was_cold,
-                            )
-                    if sig_res.blocked:
-                        st.info(sig_res.message)
-                    elif not sig_res.grounded:
-                        st.warning(
-                            "The web search didn't run for this program, so "
-                            "there's no sourced basis for a rhetoric signal. "
-                            "Rather than correlate funding against numbers the "
-                            "model recalled, this shows nothing. Try a "
-                            "higher-profile program or a narrower year window."
+                sig_res = enricher_r.annual_signal(
+                    sel_cands[0]["name"],
+                    [c["pe_number"] for c in sel_cands],
+                    yr_lo, yr_hi, user_id=uid_r, allow_fresh=False,
+                )
+                label = ("Analyze open-source signal (AI + web search)"
+                         if sig_res.cold
+                         else "Re-run analysis (AI + web search)")
+                if st.button(label):
+                    was_cold = sig_res.cold
+                    with st.spinner(
+                            "Characterizing public statements by year..."):
+                        sig_res = enricher_r.annual_signal(
+                            sel_cands[0]["name"],
+                            [c["pe_number"] for c in sel_cands],
+                            yr_lo, yr_hi, user_id=uid_r, allow_fresh=True,
+                            force=not was_cold,
                         )
-                    if sig_res.search_suggestions_html:
-                        st.html(sig_res.search_suggestions_html)
-                    if sig_res.cached and sig_res.created_at:
-                        st.caption(f"Saved analysis from "
-                                   f"{sig_res.created_at:%Y-%m-%d}.")
+                if sig_res.blocked:
+                    st.info(sig_res.message)
+                elif not sig_res.grounded:
+                    st.warning(
+                        "The web search didn't run for this program, so "
+                        "there's no sourced basis for a rhetoric signal. "
+                        "Rather than correlate funding against numbers the "
+                        "model recalled, this shows nothing. Try a "
+                        "higher-profile program or a narrower year window."
+                    )
+                if sig_res.search_suggestions_html:
+                    st.html(sig_res.search_suggestions_html)
+                if sig_res.cached and sig_res.created_at:
+                    st.caption(f"Saved analysis from "
+                               f"{sig_res.created_at:%Y-%m-%d}.")
+
                 # None means "nothing to render here" - a cold panel shows its
                 # button, and a refused call already showed the governor's
                 # message, so neither should fall through to the "could not
                 # characterize this program" note below.
                 sig_rows = (sig_res.payload
-                            if sig_res and not sig_res.cold
-                            and not sig_res.blocked
+                            if not sig_res.cold and not sig_res.blocked
                             and sig_res.grounded else None)
-                if sig_rows is not None and sel_cands:
+                if sig_rows is not None:
                     if not sig_rows:
                         st.info(
                             "The AI could not characterize open-source "
@@ -920,7 +1065,6 @@ with tab_rhetoric:
                         funding = funding[funding["fiscal_year"] >= yr_lo]
 
                         r = align_rhetoric_funding(signal, funding)
-                        display_name = sel_cands[0]["name"]
                         st.markdown(headline_sentence(display_name, r,
                                                       yr_lo, yr_hi))
 
@@ -1020,26 +1164,35 @@ with tab_rhetoric:
                                 "statement": "Notable statement",
                             },
                         )
-                        with st.expander("Methodology & caveats"):
-                            st.markdown(
-                                "- **The open-source signal is an AI "
-                                "estimate**, grounded in web search — not a "
-                                "media-analytics mention count. Intensity is "
-                                "relative to the program's own baseline.\n"
-                                "- **Alignment coefficient** = Spearman rank "
-                                "correlation between annual mention intensity "
-                                "and annual funding, evaluated at 0, 1, and "
-                                "2-year funding leads (budgets are written "
-                                "1–2 years after the rhetoric); the strongest "
-                                "lead is reported.\n"
-                                "- With at most a handful of years, treat the "
-                                "coefficient as directional, not precise. "
-                                "Coverage bias: recent years are better "
-                                "documented online than older ones.\n"
-                                "- Funding series = discretionary figures for "
-                                "the selected PEs (actuals, then enacted, "
-                                "then request)."
-                            )
+
+            with st.expander("Methodology & caveats"):
+                st.markdown(
+                    "- **Congressional figures are an exact join**, parsed "
+                    "from the RDT&E funding tables printed in HASC/SASC NDAA "
+                    "committee reports — requested, the committee's change, "
+                    "authorized, and the reason the committee printed. Not "
+                    "inferred, not AI. Coverage begins at FY2012 because "
+                    "earlier reports print those tables as images.\n"
+                    "- A program element can carry **several lines in one "
+                    "report**, one per budget activity; those are summed per "
+                    "fiscal year. House and Senate score the same request "
+                    "separately and are never pooled.\n"
+                    "- Authorization is not appropriation — a committee can "
+                    "authorize money that is never appropriated.\n"
+                    "- **The open-source signal is an AI estimate**, grounded "
+                    "in web search — not a media-analytics mention count. "
+                    "Intensity is relative to the program's own baseline.\n"
+                    "- **Alignment coefficient** = Spearman rank correlation "
+                    "between annual mention intensity and annual funding, "
+                    "evaluated at 0, 1, and 2-year funding leads (budgets are "
+                    "written 1–2 years after the rhetoric); the strongest "
+                    "lead is reported.\n"
+                    "- With at most a handful of years, treat the coefficient "
+                    "as directional, not precise. Coverage bias: recent years "
+                    "are better documented online than older ones.\n"
+                    "- Funding series = discretionary figures for the "
+                    "selected PEs (actuals, then enacted, then request)."
+                )
 
 # ═══════════════════════════════ Data Coverage ═══════════════════════════════
 with tab_coverage:

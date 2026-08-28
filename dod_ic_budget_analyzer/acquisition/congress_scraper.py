@@ -21,8 +21,10 @@ Table format (SEC. 4201, "In Thousands of Dollars")::
            ........................      AI-Enhanced Quantum                  [5,000]
                                           Computing.
 
-Fixed-width columns: request ends at col 78, committee delta at 94,
-authorized at 112. Titles and rationales wrap onto continuation lines.
+The layout is fixed-width but drifts between Congresses, so the money columns
+are detected per document rather than hardcoded (FY2022 ends at 79/95/112,
+FY2024 and FY2026 at 78/94/112). Titles, budget activity headings, and
+rationales all wrap onto continuation lines.
 
 Known limits
 ------------
@@ -94,9 +96,15 @@ MONEY_MARGIN = 60
 RE_MONEY = re.compile(r"(?<= )(-?\d{1,3}(?:,\d{3})*|-?\d+)(?= |$)")
 
 # A PE row: line number (may carry a letter suffix like '090A'), then the PE
-# number. PE numbers run 6-10 digits with a 0-2 letter agency suffix -- Space
-# Force uses two ('1206601SF'), and classified placeholders are all 9s.
-RE_PE_ROW = re.compile(r"^ {1,5}(\d{1,4}[A-Z]?) +(\d{6,10}[A-Z]{0,2}) {2,}(\S.*)$")
+# number. PE numbers run 6-10 digits followed by an optional agency suffix that
+# starts with a letter and may contain digits -- one char ('0601102A'), two
+# ('1206601SF'), or three ('0601108D8Z' Defense-Wide, '...JCY' joint,
+# '...OTE'). Capping the suffix at two characters silently dropped 322 rows
+# across three reports, all of them Defense-Wide/joint programs. Classified
+# placeholders are all 9s with no suffix.
+RE_PE_ROW = re.compile(
+    r"^ {1,5}(\d{1,4}[A-Z]?) +(\d{6,10}(?:[A-Z][A-Z0-9]{0,2})?) {2,}(\S.*)$"
+)
 
 # '   ........................  BASIC RESEARCH' -- a budget activity heading.
 RE_BA_HEADER = re.compile(r"^ +\.{5,} {2,}([A-Z][A-Z0-9 &,'\-/]{3,})\s*$")
@@ -110,6 +118,9 @@ RE_SKIP = re.compile(r"\b(SUBTOTAL|TOTAL|UNDISTRIBUTED)\b")
 
 # The RDT&E table opens with the '(In Thousands of Dollars)' banner; the next
 # SEC. 4xxx banner closes it.
+# Account banner, e.g. 'RESEARCH, DEVELOPMENT, TEST / AND EVALUATION, ARMY'.
+RE_ACCOUNT_HEADER = re.compile(r"^RESEARCH, DEVELOPMENT", re.IGNORECASE)
+
 RE_SECTION_4201 = re.compile(r"^ *SEC\. 4201\..*Thousands of Dollars", re.IGNORECASE)
 RE_SECTION_NEXT = re.compile(r"^ *SEC\. 4(?!201)\d{3}\.", re.IGNORECASE)
 
@@ -182,6 +193,14 @@ def detect_money_columns(lines: List[str]) -> List[int]:
     return sorted(edge for edge, _ in edges.most_common(3))
 
 
+def _title_end(line: str) -> int:
+    """Where the program title stops: the first money cell on the row."""
+    for token in RE_MONEY.finditer(line):
+        if token.start() >= MONEY_MARGIN:
+            return token.start()
+    return len(line)
+
+
 def row_amounts(line: str, edges: List[int],
                 tolerance: int = 1) -> List[Optional[float]]:
     """
@@ -246,6 +265,8 @@ def parse(text: str, rid: str) -> List[dict]:
     rationales: List[list] = []
     in_rationale = False
     budget_activity: Optional[str] = None
+    heading_open = False
+    heading_is_account = False
 
     def render(item: list) -> str:
         label = _tidy(" ".join(item[0]))
@@ -277,10 +298,11 @@ def parse(text: str, rid: str) -> List[dict]:
             current = {
                 "line_number": line_no,
                 "pe_number": pe_number,
-                # Title starts where the regex found it, not at a fixed column:
-                # PE numbers vary in width (Space Force uses 9 chars), which
-                # shifts the title right and would clip a fixed slice.
-                "program_title": _tidy(line[pe_match.start(3):MONEY_MARGIN]),
+                # Title runs from where the regex found it to the first money
+                # cell. BOTH edges must be derived, never fixed: PE numbers
+                # vary in width (9 for Space Force, 10 for Defense-Wide D8Z),
+                # which shifts the title right and clipped it at both ends.
+                "program_title": _tidy(line[pe_match.start(3):_title_end(line)]),
                 "budget_activity_title": budget_activity,
                 "request_k": request,
                 "committee_delta_k": delta,
@@ -297,15 +319,37 @@ def parse(text: str, rid: str) -> List[dict]:
         if ba_match:
             close()
             heading = _tidy(ba_match.group(1))
+            heading_open = False
             if heading and not RE_SKIP.search(heading):
-                budget_activity = heading[:200]
+                # Account banners ('RESEARCH, DEVELOPMENT, TEST / AND
+                # EVALUATION, ARMY') share this shape but are not budget
+                # activities -- consume their wrapped tail without recording it.
+                heading_is_account = bool(RE_ACCOUNT_HEADER.match(heading))
+                heading_open = True
+                if not heading_is_account:
+                    budget_activity = heading[:200]
             continue
 
         if not stripped or set(stripped) <= {"-", "="}:
             close()
+            heading_open = False
             continue
 
         if current is None:
+            # Budget activity names wrap too ('ADVANCED COMPONENT' +
+            # 'DEVELOPMENT AND PROTOTYPES'); without this the stored label is
+            # truncated mid-phrase and reads as broken in the UI.
+            # Only a bare wrapped word belongs here. Anything carrying a money
+            # cell is a data row, not a heading tail -- without this guard a
+            # heading swallows whole rows when a PE shape goes unrecognised.
+            if (heading_open and not RE_BRACKET.search(line)
+                    and not any(t.start() >= MONEY_MARGIN
+                                for t in RE_MONEY.finditer(line))):
+                tail = _tidy(line)
+                if tail and not heading_is_account and budget_activity:
+                    budget_activity = f"{budget_activity} {tail}"[:200]
+                continue
+            heading_open = False
             continue
 
         bracket = RE_BRACKET.search(line)
