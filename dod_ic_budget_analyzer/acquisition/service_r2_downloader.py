@@ -309,8 +309,17 @@ def to_text(pdf: Path, refresh: bool = False) -> Optional[str]:
 
 
 def harvest(services: List[str], years: List[int], dest: Path,
-            refresh: bool = False, list_only: bool = False) -> dict:
-    """Download and parse every requested service-year, returning parsed rows."""
+            refresh: bool = False, list_only: bool = False,
+            on_book=None) -> dict:
+    """
+    Download and parse every requested service-year, returning parsed rows.
+
+    `on_book(narratives, accomplishments)` is called after EACH book rather
+    than once at the end. That matters: a harvest spends most of its wall clock
+    waiting on hosts that refuse traffic, so any outer timeout lands mid-run,
+    and ingesting only at the end throws away every book already parsed. This
+    cost two Air Force books (195 PEs) before it was fixed.
+    """
     narratives: List[dict] = []
     accomplishments: List[dict] = []
     report: List[dict] = []
@@ -353,6 +362,8 @@ def harvest(services: List[str], years: List[int], dest: Path,
                     report.append({"file": name, **diag,
                                    "narratives": len(parsed["narratives"]),
                                    "accomplishments": len(parsed["accomplishments"])})
+                    if on_book is not None and parsed["narratives"]:
+                        on_book(parsed["narratives"], parsed["accomplishments"])
                     unparsed = diag["pes_printed_but_unparsed"]
                     flag = f"  !! {len(unparsed)} PE(s) unparsed" if unparsed else ""
                     # A book that yields nothing is the failure mode that
@@ -397,8 +408,38 @@ def main() -> int:
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 
-    result = harvest(args.service, args.years, args.dest,
-                     refresh=args.refresh, list_only=args.list_only)
+    on_book = None
+    session = None
+    totals = {"narratives": 0, "accomplishments": 0}
+
+    if args.ingest and not args.list_only:
+        import pandas as pd
+        from storage.db import get_engine, get_session_factory, init_db
+        from storage.ingest_r2 import R2Ingestor
+
+        db_uri = args.db or (
+            "sqlite:///" + (Path(__file__).parent.parent / "data" / "processed"
+                            / "usg_budgets.db").as_posix()
+        )
+        engine = get_engine(db_uri)
+        init_db(engine)
+        session = get_session_factory(engine)()
+        ingestor = R2Ingestor(session)
+
+        def on_book(narratives, accomplishments):
+            counts = ingestor.ingest_frames(pd.DataFrame(narratives),
+                                            pd.DataFrame(accomplishments))
+            totals["narratives"] += counts["narratives"]
+            totals["accomplishments"] += counts["accomplishments"]
+
+    try:
+        result = harvest(args.service, args.years, args.dest,
+                         refresh=args.refresh, list_only=args.list_only,
+                         on_book=on_book)
+    finally:
+        if session is not None:
+            session.close()
+
     if args.list_only:
         return 0
 
@@ -410,23 +451,7 @@ def main() -> int:
     if not args.ingest:
         print("(dry run - pass --ingest to write)")
         return 0
-
-    import pandas as pd
-    from storage.db import get_engine, get_session_factory, init_db
-    from storage.ingest_r2 import R2Ingestor
-
-    db_uri = args.db or (
-        "sqlite:///" + (Path(__file__).parent.parent / "data" / "processed"
-                        / "usg_budgets.db").as_posix()
-    )
-    engine = get_engine(db_uri)
-    init_db(engine)
-    with get_session_factory(engine)() as session:
-        counts = R2Ingestor(session).ingest_frames(
-            pd.DataFrame(result["narratives"]),
-            pd.DataFrame(result["accomplishments"]),
-        )
-    print(f"ingested: {counts}")
+    print(f"ingested: {totals}")
     return 0
 
 
