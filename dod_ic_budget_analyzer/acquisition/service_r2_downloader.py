@@ -40,6 +40,7 @@ Usage::
 
 import argparse
 import logging
+import os
 import random
 import re
 import subprocess
@@ -104,8 +105,12 @@ TIMEOUT = httpx.Timeout(connect=30.0, read=900.0, write=60.0, pool=30.0)
 # single manual fetch succeeds while a backfill loop gets refused on every
 # request. Retry with backoff and space the requests out.
 RETRY_STATUS = {429, 500, 502, 503, 504}
-RETRY_ATTEMPTS = 5
-WAYBACK_DELAY = 5.0
+RETRY_ATTEMPTS = int(os.environ.get("R2_RETRY_ATTEMPTS", "5"))
+# Measured: the FIRST archive request of a run succeeds and everything after it
+# gets 503 until a long cool-off. Backoff capped at ~80s never recovers. These
+# are env-tunable so a patient overnight pass can use minutes, not seconds,
+# without editing code.
+WAYBACK_DELAY = float(os.environ.get("R2_WAYBACK_DELAY", "5"))
 
 # secnav.navy.mil serves at ~0.4 MB/s and starts timing out entirely once a
 # backfill has been pulling from it for a while. These are public government
