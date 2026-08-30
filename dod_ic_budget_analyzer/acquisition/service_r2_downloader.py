@@ -56,6 +56,11 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import config  # noqa: E402
 from parsing.r2_pdf_parser import parse_book  # noqa: E402
+# Reused rather than reimplemented: the same suffix-vs-catalog rule the NDAA
+# scraper needs, for the same reason (see resolve_agencies below).
+from acquisition.congress_scraper import (  # noqa: E402
+    _agency_index, resolve_agency,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -387,6 +392,30 @@ def harvest(services: List[str], years: List[int], dest: Path,
             "report": report, "empty": empty}
 
 
+def resolve_agencies(rows: List[dict], session) -> int:
+    """
+    Correct each row's agency against the program-element catalog.
+
+    The Department of the Air Force publishes Space Force books, and their
+    exhibit banners still read "Air Force" -- so 373 Space Force narratives
+    arrived filed under the wrong service. The PE suffix is the real signal
+    (SF vs F), but it cannot be applied blindly either: the catalog files 83
+    SF-suffixed PEs under Space Force and 62 under Air Force, reflecting the
+    transition. Resolving against the catalog is what keeps the
+    (pe_number, agency) join intact.
+
+    Returns the number of rows whose agency changed.
+    """
+    index = _agency_index(session)
+    changed = 0
+    for row in rows:
+        resolved = resolve_agency(row["pe_number"], index)
+        if resolved != "Unknown" and resolved != row["agency"]:
+            row["agency"] = resolved
+            changed += 1
+    return changed
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--service", nargs="+",
@@ -427,6 +456,10 @@ def main() -> int:
         ingestor = R2Ingestor(session)
 
         def on_book(narratives, accomplishments):
+            fixed = resolve_agencies(narratives, session)
+            fixed += resolve_agencies(accomplishments, session)
+            if fixed:
+                logger.info(f"agency corrected against the catalog on {fixed} row(s)")
             counts = ingestor.ingest_frames(pd.DataFrame(narratives),
                                             pd.DataFrame(accomplishments))
             totals["narratives"] += counts["narratives"]

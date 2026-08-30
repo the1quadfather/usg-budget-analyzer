@@ -182,6 +182,10 @@ SUFFIX_AGENCY = {
     "N": "Navy",
     "F": "Air Force",
     "SF": "Space Force",
+    # Operational Test & Evaluation PEs are filed in program_elements under
+    # BOTH 'Defense-Wide' and 'OT&E'. Without this the alphabetical tie-break
+    # picks Defense-Wide and the more precise component is lost.
+    "OTE": "OT&E",
 }
 
 # Agency strings in program_elements that are ingestion artifacts, never a
