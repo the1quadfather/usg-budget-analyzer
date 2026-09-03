@@ -58,12 +58,17 @@ pip install -r requirements.txt
 streamlit run app.py
 ```
 
-The repository ships with the processed database (FY1998–FY2027 R-1 funding,
-PB2026–PB2027 Defense-Wide narratives, and 26,544 congressional
-authorization actions from 30 NDAA committee reports covering FY2012–FY2027
-in both chambers), so the app is useful immediately.
-The first Program Finder search downloads the sentence-transformer model
-(one time, ~90MB).
+The repository ships with the processed database, so the app is useful
+immediately: FY1998–FY2027 R-1 funding, R-2 mission narratives for 1,383 of
+2,055 program elements across all five components, and 26,544 congressional
+authorization actions from 30 NDAA committee reports covering FY2012–FY2027 in
+both chambers.
+
+The database ships **compressed** as `usg_budgets.db.gz` (27 MB) because 124 MB
+raw is past GitHub's per-file limit. It expands itself the first time anything
+opens it — no setup step — and the expanded file is gitignored. The first
+Program Finder search downloads the sentence-transformer model (one time,
+~90MB); its embeddings are prebuilt and shipped.
 
 ### Optional: AI features
 
@@ -166,13 +171,18 @@ already in the shipped database.
   parsed PDFs for FY1998–FY2011. Discretionary and reconciliation/mandatory
   funds are kept as separate streams.
 - **R-2 justification books**: Defense-Wide via official DTIC-schema XML
-  (PB2026 cycle onward), and Army/Navy via the PDF books those departments
-  publish — parsed from the PDF text layer, which prints the program element
-  verbatim in every exhibit header, so the join is exact rather than fuzzy.
-  Mission descriptions, projects, and per-year accomplishment line items.
-  Narrative coverage is 740 of 2,055 program elements (36%); Air Force and
-  Space Force are still missing because their host aborts the TLS handshake
-  for every client, and the only alternative is a third-party archive.
+  (PB2026 cycle onward); Army and Navy via the PDF books those departments
+  publish; Air Force and Space Force via the Internet Archive, because their
+  own host aborts the TLS handshake against every client. Parsed from the PDF
+  text layer, which prints the program element verbatim in every exhibit
+  header, so the join is exact rather than fuzzy. Mission descriptions,
+  projects, and per-year accomplishment line items.
+  **Narrative coverage is 1,383 of 2,055 program elements (67%)** — Air Force
+  389, Army 346, Navy 296, Defense-Wide 282, Space Force 67, OT&E 3 — spanning
+  FY2018–FY2027. Coverage is uneven by design of the sources: Army published no
+  RDT&E books for FY2023, and the Internet Archive holds Air Force and Space
+  Force books only through FY2024 and rate-limits retrieval to a few documents
+  at a time, so that backfill converges over repeated runs.
 - **NDAA authorization committee reports** (govinfo.gov): the RDT&E funding
   tables printed in HASC/SASC reports, parsed to per-program-element
   requested / committee change / authorized figures plus the committee's own
