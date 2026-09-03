@@ -20,3 +20,8 @@ dod_ic_budget_analyzer/logs/
 .claude/
 .vscode/
 .ipynb_checkpoints/
+
+# The database ships COMPRESSED as usg_budgets.db.gz — 124 MB raw is past
+# GitHub's 100 MB per-file limit, and it is mostly prose so it stores at about
+# a quarter of that. storage.db.get_engine() expands it on first use.
+dod_ic_budget_analyzer/data/processed/usg_budgets.db

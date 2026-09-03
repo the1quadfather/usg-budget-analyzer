@@ -15,7 +15,7 @@ context. Everything runs locally against a SQLite database.
 |---|---|
 | **Budget Trends** | How has RDT&E funding moved by component, FY1998–FY2027? Who got paid from each appropriation account? |
 | **Program Finder** | Which budget program is this name / news quote / PE number? Then a full profile: funding history, official plans & reported work, contract awards, recent coverage |
-| **Rhetoric vs. Budget** | Did the money follow the talk? AI-characterized public emphasis correlated against the funding trajectory, with a lead-aware alignment coefficient |
+| **Rhetoric vs. Budget** | Did the money follow the talk? What was requested vs. what the authorizing committees actually authorized, with the reason they printed — an exact join, no API key. Optionally overlaid with AI-characterized public emphasis and a lead-aware alignment coefficient |
 | **Data Coverage** | What's ingested, what's live-queried, and the known blind spots |
 
 Program matching is multi-stage: exact PE-number lookup, lexical matching
@@ -58,15 +58,24 @@ pip install -r requirements.txt
 streamlit run app.py
 ```
 
-The repository ships with the processed database (FY1998–FY2027 R-1 funding,
-PB2026–PB2027 Defense-Wide narratives), so the app is useful immediately.
-The first Program Finder search downloads the sentence-transformer model
-(one time, ~90MB).
+The repository ships with the processed database, so the app is useful
+immediately: FY1998–FY2027 R-1 funding, R-2 mission narratives for 1,383 of
+2,055 program elements across all five components, and 26,544 congressional
+authorization actions from 30 NDAA committee reports covering FY2012–FY2027 in
+both chambers.
+
+The database ships **compressed** as `usg_budgets.db.gz` (27 MB) because 124 MB
+raw is past GitHub's per-file limit. It expands itself the first time anything
+opens it — no setup step — and the expanded file is gitignored. The first
+Program Finder search downloads the sentence-transformer model (one time,
+~90MB); its embeddings are prebuilt and shipped.
 
 ### Optional: AI features
 
 Set a Gemini API key to enable ambiguity resolution, "In the News," and the
-Rhetoric vs. Budget tab:
+optional open-source-emphasis layer on the Rhetoric vs. Budget tab. The
+congressional requested-vs-authorized figures on that tab need **no key** and
+cost nothing per user:
 
 ```bash
 setx GEMINI_API_KEY "your-key"     # Windows; export on Linux/macOS
@@ -161,10 +170,29 @@ already in the shipped database.
 - **R-1 exhibits** (comptroller.war.gov): official XLSX for FY2012–FY2027,
   parsed PDFs for FY1998–FY2011. Discretionary and reconciliation/mandatory
   funds are kept as separate streams.
-- **R-2 justification books**: official DTIC-schema XML, published from the
-  PB2026 cycle onward, Defense-Wide components only (the services publish
-  PDF-only). Mission descriptions, projects, and per-year accomplishment
-  line items with funding.
+- **R-2 justification books**: Defense-Wide via official DTIC-schema XML
+  (PB2026 cycle onward); Army and Navy via the PDF books those departments
+  publish; Air Force and Space Force via the Internet Archive, because their
+  own host aborts the TLS handshake against every client. Parsed from the PDF
+  text layer, which prints the program element verbatim in every exhibit
+  header, so the join is exact rather than fuzzy. Mission descriptions,
+  projects, and per-year accomplishment line items.
+  **Narrative coverage is 1,383 of 2,055 program elements (67%)** — Air Force
+  389, Army 346, Navy 296, Defense-Wide 282, Space Force 67, OT&E 3 — spanning
+  FY2018–FY2027. Coverage is uneven by design of the sources: Army published no
+  RDT&E books for FY2023, and the Internet Archive holds Air Force and Space
+  Force books only through FY2024 and rate-limits retrieval to a few documents
+  at a time, so that backfill converges over repeated runs.
+- **NDAA authorization committee reports** (govinfo.gov): the RDT&E funding
+  tables printed in HASC/SASC reports, parsed to per-program-element
+  requested / committee change / authorized figures plus the committee's own
+  stated reason. Key-free and, as US Government works (17 U.S.C. 105), public
+  domain. **Machine-readable tables begin at FY2012** — earlier reports print
+  them as GRAPHIC images, so an absent year means "not available," not "no
+  action taken." A program element can hold several lines in one report (one
+  per budget activity); those are summed per fiscal year, while House and
+  Senate are never pooled because they score the same request separately.
+  Authorization is not appropriation.
 - **USAspending.gov**: live queries. Public award records carry **no
   program-element linkage**, so program-level award search is keyword
   matching — the UI labels it "leads, not a ledger." Other Transactions
