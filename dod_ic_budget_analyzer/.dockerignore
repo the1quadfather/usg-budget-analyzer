@@ -1,5 +1,14 @@
-# Data is volume-mounted at runtime, never baked into the image
+# Everything under data/ is excluded, then the two runtime artifacts are added
+# back. The image is therefore self-contained: `docker run` works with no
+# volume and no checkout. docker-compose still mounts ./data over the top,
+# which shadows these with the host's copies for local development.
 data/
+!data/processed/usg_budgets.db.gz
+!data/processed/semantic_embeddings_*.pt
+
+# The expanded database is derived from the .gz at runtime -- never ship it,
+# it is ~124 MB and would defeat the point of compressing it.
+data/processed/usg_budgets.db
 
 logs/
 __pycache__/

@@ -54,9 +54,15 @@ Requires Python 3.12+.
 
 ```bash
 cd dod_ic_budget_analyzer
+pip install torch --index-url https://download.pytorch.org/whl/cpu   # do this first
 pip install -r requirements.txt
 streamlit run app.py
 ```
+
+**Install CPU torch first.** The default PyPI wheel is the CUDA build — several
+gigabytes — and nothing here needs a GPU. Installing it first means the rest of
+the requirements see torch as already satisfied. (The Dockerfile does this for
+you.)
 
 The repository ships with the processed database, so the app is useful
 immediately: FY1998–FY2027 R-1 funding, R-2 mission narratives for 1,383 of
@@ -101,10 +107,18 @@ python -m analysis.ai_budget --reset-runtime   # clear ALL runtime rows (see bel
 python analysis/ai_budget_eval.py              # self-check: cost math + caching rules
 ```
 
-**Run `--reset-runtime` before committing.** The SQLite database is tracked in this
-public repository, so a dev session's cached AI results, spend ledger, and search log
-would otherwise be published — and grounded search results must never be. The command
-clears those four tables and VACUUMs the file so deleted rows are not merely unlinked.
+**Run `--reset-runtime` before rebuilding the shipped archive.** The database is
+published in this public repository (compressed, see below), so a dev session's
+cached AI results, spend ledger, and search log would otherwise be shipped — and
+grounded search results must never be. The command clears those four tables and
+VACUUMs the file so deleted rows are not merely unlinked. Verify with:
+
+```bash
+sqlite3 data/processed/usg_budgets.db \
+  "SELECT COUNT(*) FROM ai_cache WHERE task IN ('find_open_source_hits','annual_signal');"
+```
+
+It must return 0.
 
 Warm the cache ahead of time so the app opens with analysis already in place.
 It picks targets from real search demand first, then the largest programs:
@@ -134,9 +148,19 @@ cd dod_ic_budget_analyzer
 docker compose up --build
 ```
 
-Then open http://localhost:8501. The compose file mounts `./data` (database
-persists outside the container), passes `GEMINI_API_KEY` through from your
-environment, and caches the embedding model in a named volume.
+Then open http://localhost:8501. The compose file mounts `./data` so the
+database persists outside the container, passes `GEMINI_API_KEY` through from
+your environment, and caches the embedding model in a named volume.
+
+The image is **self-contained** — it carries the compressed database and the
+prebuilt embeddings, so it also runs with no checkout and no volume:
+
+```bash
+docker build -t budget-explorer . && docker run -p 8501:8501 budget-explorer
+```
+
+Under compose the mounted `./data` shadows the copies baked into the image,
+which is what you want for local development.
 
 ## Updating the data
 
@@ -161,9 +185,24 @@ golden-set eval — run it after any matcher change:
 python analysis/linker_eval.py
 ```
 
-`data/raw/` is not tracked (≈55MB of re-downloadable PDFs/XLSX/XML); the
-pipeline above rebuilds it. Pre-FY2012 years came from parsed PDFs and are
-already in the shipped database.
+**Rebuild the shipped archive after any ingest**, or the next clone gets stale
+data — the raw `.db` is gitignored and only the `.gz` is published:
+
+```bash
+python -m analysis.ai_budget --reset-runtime          # never ship AI runtime rows
+gzip -9 -c data/processed/usg_budgets.db > data/processed/usg_budgets.db.gz
+```
+
+Service-branch R-2 narratives (Army, Navy, Air Force, Space Force) come from
+their PDF justification books:
+
+```bash
+python acquisition/service_r2_downloader.py --service army navy --years 2028 --ingest
+```
+
+`data/raw/` is not tracked (re-downloadable PDFs/XLSX/XML); the pipeline above
+rebuilds it. Pre-FY2012 years came from parsed PDFs and are already in the
+shipped database.
 
 ## Data sources & honesty notes
 

@@ -3,7 +3,7 @@ sqlalchemy
 tqdm
 httpx
 beautifulsoup4
-pdfplumber
+pdfplumber          # R-1 PDF fallback when poppler's pdftotext is absent
 openpyxl
 google-genai
 altair
@@ -11,6 +11,13 @@ rapidfuzz
 pyarrow>=8.0.0
 pandas
 sentence-transformers
+# torch: install the CPU build FIRST on any machine that will not use a GPU.
+# The default PyPI wheel is the CUDA build -- several GB -- and nothing in the
+# app needs it; the model runs on CPU. The Dockerfile already does this, but a
+# manual `pip install -r requirements.txt` does not:
+#     pip install torch --index-url https://download.pytorch.org/whl/cpu
+# Listed here so pip treats the requirement as satisfied rather than pulling
+# the CUDA wheel over the top of it.
 torch
 matplotlib
 seaborn
