@@ -5,7 +5,13 @@ SQLAlchemy 2.0 declarative schema and database connection utilities for the
 DoD/IC Budget Analyzer.
 """
 
+import gzip
+import logging
+import os
+import shutil
+import tempfile
 from datetime import datetime
+from pathlib import Path
 from typing import List, Optional
 
 from sqlalchemy import Float, ForeignKey, Integer, String, Text, create_engine
@@ -17,6 +23,9 @@ from sqlalchemy.orm import (
     relationship,
     sessionmaker,
 )
+
+
+logger = logging.getLogger(__name__)
 
 
 class Base(DeclarativeBase):
@@ -237,6 +246,48 @@ class PECongressionalAction(Base):
     ingested_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
 
 
+def ensure_sqlite_file(db_uri: str) -> None:
+    """
+    Decompress the shipped `<name>.db.gz` when the plain `.db` is missing or
+    older than the archive.
+
+    The database is the product -- the app is useful the moment you clone --
+    but it outgrew GitHub's 100 MB per-file limit. It is ~63 MB of English
+    prose, so it stores at roughly a quarter of that and ships as
+    `usg_budgets.db.gz`, expanded here on first use.
+
+    Decompression writes a temporary file in the same directory and then
+    renames it, because os.replace is atomic on POSIX: a crash, or a second
+    process starting mid-write, can never leave a truncated database that
+    looks complete. The mtime check means a pulled update is picked up rather
+    than silently ignored, while a locally rebuilt database (newer than the
+    archive) is left alone.
+    """
+    prefix = "sqlite:///"
+    if not db_uri.startswith(prefix):
+        return
+    path = Path(db_uri[len(prefix):])
+    archive = path.with_name(path.name + ".gz")
+    if not archive.exists():
+        return
+    if path.exists() and path.stat().st_mtime >= archive.stat().st_mtime:
+        return
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    logger.info(f"Expanding {archive.name} -> {path.name}")
+    handle, temp_name = tempfile.mkstemp(dir=str(path.parent),
+                                         prefix=f".{path.name}.", suffix=".tmp")
+    os.close(handle)
+    temp_path = Path(temp_name)
+    try:
+        with gzip.open(archive, "rb") as src, open(temp_path, "wb") as dst:
+            shutil.copyfileobj(src, dst, length=8 * 1024 * 1024)
+        os.replace(temp_path, path)
+    except Exception:
+        temp_path.unlink(missing_ok=True)
+        raise
+
+
 def get_engine(db_uri: str) -> Engine:
     """
     Creates and returns a SQLAlchemy Engine instance.
@@ -247,6 +298,9 @@ def get_engine(db_uri: str) -> Engine:
     Returns:
         Engine: Configured SQLAlchemy engine.
     """
+    # Every entry point -- app, scrapers, evals -- opens the database through
+    # here, so this is the one place the archive needs expanding.
+    ensure_sqlite_file(db_uri)
     return create_engine(db_uri, echo=False)
 
 
