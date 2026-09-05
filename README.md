@@ -88,9 +88,10 @@ setx GEMINI_API_KEY "your-key"     # Windows; export on Linux/macOS
 ```
 
 **Keys are per-user and never live in this repository.** The app reads
-`GEMINI_API_KEY` (or `GOOGLE_API_KEY`) from the environment only — there is
-no key file, config entry, or Docker build argument for it, and `.env` files
-are gitignored as a guardrail. Don't commit credentials in any form.
+`GEMINI_API_KEY` (or `GOOGLE_API_KEY`) from the environment — or, on Streamlit
+Community Cloud, from the app's Secrets — and nowhere else: there is no key
+file, config entry, or Docker build argument for it, and `.env` files are
+gitignored as a guardrail. Don't commit credentials in any form.
 
 ### AI cost control
 
@@ -140,6 +141,27 @@ python analysis/ai_precompute.py --limit 20             # warm it
   invented outlets and dates that look identical to real ones. When no search
   happened, the app shows nothing and says why rather than presenting
   recollection as sourced reporting.
+
+## Quickstart (Streamlit Community Cloud)
+
+The public demo runs this way with no infrastructure: deploy straight from
+this repository with main file `dod_ic_budget_analyzer/app.py`. Two things are
+specific to the hosted app:
+
+- `.streamlit/config.toml` at the repository root turns the source-file
+  watcher off. On a deployment the code only changes on redeploy, and with the
+  watcher on Streamlit probes every imported module after each run — which
+  makes transformers' lazy vision modules try to import torchvision and logs
+  ~150 harmless tracebacks per scan.
+- **Leave `GEMINI_API_KEY` out of a public deployment.** Every AI button would
+  bill the deployer's key, and anonymous visitors all share one identity, so
+  web-grounded results could not be kept per-user as the Gemini terms require.
+  The app degrades cleanly: the AI panels show a one-line note and everything
+  else works. For a private showing, add the key under the app's Settings →
+  Secrets and **Reboot** the app — the key is read once at startup.
+
+Community Cloud apps get roughly 1 GB of RAM; this one settles around 550–600 MB
+once the matching model has loaded.
 
 ## Quickstart (Docker)
 

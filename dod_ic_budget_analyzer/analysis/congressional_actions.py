@@ -22,9 +22,10 @@ Two things callers must respect:
 import logging
 
 import polars as pl
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from analysis.text_render import escape_dollars
 from storage.db import PECongressionalAction
 
 logger = logging.getLogger(__name__)
@@ -62,6 +63,21 @@ class CongressionalActions:
 
     def __init__(self, session: Session):
         self.session = session
+
+    def fiscal_year_bounds(self) -> tuple[int, int]:
+        """
+        (first, last) fiscal year with any stored committee action, for sizing
+        a year picker from the data rather than a hardcoded range. An empty
+        table yields (COVERAGE_FIRST_FY, COVERAGE_FIRST_FY) so a caller never
+        builds a slider whose maximum is below its minimum.
+        """
+        first, last = self.session.execute(
+            select(func.min(PECongressionalAction.fiscal_year),
+                   func.max(PECongressionalAction.fiscal_year))
+        ).one()
+        if first is None or last is None:
+            return COVERAGE_FIRST_FY, COVERAGE_FIRST_FY
+        return int(first), int(last)
 
     def get_actions(self, pe_numbers: list[str],
                     agencies: list[str] | None = None) -> pl.DataFrame:
@@ -217,7 +233,9 @@ def headline(program_name: str, summary: dict) -> str:
         verdict = (f"**cut ${abs(delta):,.1f}M** from the request "
                    f"({summary['net_delta_pct']:+.1f}%)")
 
-    return (
+    # Rendered through st.markdown, where two dollar amounts in one string
+    # would otherwise be parsed as an inline LaTeX span (see text_render).
+    return escape_dollars(
         f"Across {span}, authorizing committees {verdict} for "
         f"**{program_name}** — ${summary['total_requested_m']:,.1f}M requested, "
         f"${summary['total_authorized_m']:,.1f}M authorized."

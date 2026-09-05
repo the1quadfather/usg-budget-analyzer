@@ -1,0 +1,15 @@
+# Streamlit configuration for the hosted app.
+#
+# Streamlit Community Cloud runs with the repository root as its working
+# directory and reads exactly one config file, this one, even though the
+# entrypoint lives in dod_ic_budget_analyzer/. Keep it here.
+
+[server]
+# The source-file watcher exists for local development (edit a .py, the app
+# reruns). On a deployment the code only changes on redeploy, so the watcher
+# does nothing useful -- and it is actively harmful here: after every script
+# run it probes each module in sys.modules with hasattr(m, "__path__"), which
+# makes transformers' lazy image-processor alias modules import torchvision
+# (not installed, not needed by anything in this app) and logs ~150
+# ModuleNotFoundError tracebacks per scan on the server's event loop.
+fileWatcherType = "none"

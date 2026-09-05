@@ -27,6 +27,7 @@ from storage.db import get_engine, get_session_factory
 from matching.fuzzy_matcher import ProgramMatcher
 from analysis.program_linker import ProgramLinker
 from analysis.trend_tracker import TrendTracker
+from analysis.text_render import escape_dollars
 
 # --- Configuration & State Setup ---
 st.set_page_config(page_title="DoD Budget Explorer", layout="wide")
@@ -201,6 +202,14 @@ def fetch_coverage_stats() -> dict:
                 stats[key] = 0
     return stats
 
+@st.cache_data(ttl=3600, show_spinner=False)
+def congressional_year_bounds() -> tuple[int, int]:
+    """First and last fiscal year with a stored committee action."""
+    from analysis.congressional_actions import CongressionalActions
+    SessionFactory = init_db_connection()
+    with SessionFactory() as session:
+        return CongressionalActions(session).fiscal_year_bounds()
+
 # --- Chart styling (validated reference palette) ---
 
 BASIS_COLORS = alt.Scale(
@@ -209,7 +218,7 @@ BASIS_COLORS = alt.Scale(
 )
 STRATEGY_LABELS = {
     "FUZZY": "Name similarity",
-    "SEMANTIC": "Meaning (AI)",
+    "SEMANTIC": "Meaning (local model)",
     "ACRONYM": "Acronym",
     "PE_NUMBER": "PE number",
 }
@@ -284,14 +293,14 @@ with tab_trends:
             )
             .properties(height=340)
         )
-        st.altair_chart(trend_chart, use_container_width=True)
+        st.altair_chart(trend_chart, width="stretch")
         st.caption(
             "Each year shows its most reliable figure: reported actuals, then "
             "enacted, then the budget request. Discretionary only — "
             "reconciliation/mandatory funds are tracked separately."
         )
         with st.expander("Data table"):
-            st.dataframe(df_trends, use_container_width=True, hide_index=True)
+            st.dataframe(df_trends, width="stretch", hide_index=True)
 
     st.divider()
     st.subheader("Who got paid — account-level obligations")
@@ -318,7 +327,7 @@ with tab_trends:
         if breakdown.empty:
             st.info("No obligation data returned for this selection.")
         else:
-            st.altair_chart(money_bar(breakdown, "name"), use_container_width=True)
+            st.altair_chart(money_bar(breakdown, "name"), width="stretch")
             st.caption(
                 f"Top {len(breakdown)} by contract obligations, "
                 f"{exec_comp} RDT&E account, FY{exec_fy}. DoD awards post "
@@ -338,7 +347,11 @@ with tab_finder:
             linker = load_matching_models()
             result = linker.link_query(query)
 
-        log_search(query, result)
+        # Log demand once per query, not once per rerun: every widget click
+        # anywhere in the app re-executes this block while the box is filled.
+        if st.session_state.get("_logged_query") != query:
+            log_search(query, result)
+            st.session_state["_logged_query"] = query
 
         if not result["matched_pe_id"]:
             st.warning(
@@ -350,9 +363,10 @@ with tab_finder:
             candidates = result["candidates"]
 
             if result["needs_review"]:
+                # Only offer the AI resolver when one is actually configured.
                 st.warning(
                     f'Several programs match "{query}" — pick the right one '
-                    "below, or use the AI resolver."
+                    "below" + (", or use the AI resolver." if enricher else ".")
                 )
             else:
                 strat = STRATEGY_LABELS.get(result["match_strategy"],
@@ -430,7 +444,7 @@ with tab_finder:
                 )
                 st.altair_chart(
                     (bars + values).properties(height=30 * len(candidates) + 40),
-                    use_container_width=True,
+                    width="stretch",
                 )
             else:
                 sel = candidates[0]
@@ -501,7 +515,7 @@ with tab_finder:
                         ],
                     )
                     st.altair_chart((line + points).properties(height=280),
-                                    use_container_width=True)
+                                    width="stretch")
                     st.caption(
                         "Each year shows its most reliable figure: reported "
                         "actuals, then the enacted/current-year figure, then "
@@ -526,7 +540,7 @@ with tab_finder:
                             ],
                         )
                         st.altair_chart(yoy_chart.properties(height=160),
-                                        use_container_width=True)
+                                        width="stretch")
 
                     with st.expander("Underlying funding table"):
                         st.dataframe(
@@ -534,7 +548,7 @@ with tab_finder:
                             .rename(columns={"fiscal_year": "FY",
                                              "amount_thousands": "$K",
                                              "basis": "Basis"}),
-                            use_container_width=True, hide_index=True,
+                            width="stretch", hide_index=True,
                         )
 
             # --- Plans & Work (R-2 justification narratives) ---
@@ -575,7 +589,9 @@ with tab_finder:
                             f"Program mission description "
                             f"(PB{pe_level[0].fiscal_year})", expanded=True
                         ):
-                            st.write(pe_level[0].description)
+                            # Narrative prose is full of dollar amounts, and
+                            # markdown reads "$…$" as LaTeX (see text_render).
+                            st.write(escape_dollars(pe_level[0].description))
                     if projects:
                         with st.expander(
                             f"Projects under this program ({len(projects)})"
@@ -585,10 +601,10 @@ with tab_finder:
                                 st.markdown(
                                     f"**{p.project_number} — {p.project_title}**"
                                 )
-                                st.caption(
+                                st.caption(escape_dollars(
                                     p.description[:500]
                                     + ("…" if len(p.description) > 500 else "")
-                                )
+                                ))
                     if accs:
                         label_rank = {"PY": 0, "CY": 1, "BY": 2}
                         best_rank = {}
@@ -618,10 +634,12 @@ with tab_finder:
                         for a in year_accs[:12]:
                             amt = (f"${a.funding_millions:,.1f}M — "
                                    if a.funding_millions else "")
-                            st.markdown(f"**{amt}{a.title or a.project_number}**")
+                            st.markdown(escape_dollars(
+                                f"**{amt}{a.title or a.project_number}**"))
                             if a.text:
-                                st.caption(a.text[:700]
-                                           + ("…" if len(a.text) > 700 else ""))
+                                st.caption(escape_dollars(
+                                    a.text[:700]
+                                    + ("…" if len(a.text) > 700 else "")))
                         if len(year_accs) > 12:
                             st.caption(
                                 f"…and {len(year_accs) - 12} more line items."
@@ -659,7 +677,7 @@ with tab_finder:
                             .sum().sort_values("amount", ascending=False)
                         )
                         st.altair_chart(money_bar(by_recipient, "recipient"),
-                                        use_container_width=True)
+                                        width="stretch")
                         display = awards.copy()
                         display["amount_m"] = display["amount"] / 1e6
                         display["description"] = (
@@ -669,7 +687,7 @@ with tab_finder:
                             display[["recipient", "amount_m", "instrument",
                                      "sub_agency", "start_date",
                                      "description", "url"]],
-                            use_container_width=True, hide_index=True,
+                            width="stretch", hide_index=True,
                             column_config={
                                 "recipient": "Recipient",
                                 "amount_m": st.column_config.NumberColumn(
@@ -712,7 +730,7 @@ with tab_finder:
                                 sdisp[["subawardee", "amount_m",
                                        "prime_recipient", "date",
                                        "description"]],
-                                use_container_width=True, hide_index=True,
+                                width="stretch", hide_index=True,
                                 column_config={
                                     "subawardee": "Subawardee",
                                     "amount_m": st.column_config.NumberColumn(
@@ -736,8 +754,11 @@ with tab_finder:
                         )
                     else:
                         st.caption(
-                            "AI lookups are disabled — set the GEMINI_API_KEY "
-                            "environment variable and restart the app."
+                            "AI lookups are off — no Gemini API key is "
+                            "configured for this instance. To enable them, "
+                            "run the app with your own GEMINI_API_KEY (an "
+                            "environment variable locally, or a Secret on "
+                            "Streamlit Community Cloud) and restart it."
                         )
                 else:
                     uid = current_user_id()
@@ -826,9 +847,18 @@ with tab_rhetoric:
                 "funding series)",
                 rlabels, default=rlabels[:1], key="rhet_pes",
             )
+            # Bounds come from the data, not a hardcoded range: committee
+            # actions are on record from FY2012 (earlier tables are images)
+            # through the newest report ingested.
+            fy_first, fy_last = congressional_year_bounds()
+            if fy_last <= fy_first:          # empty table; keep a valid slider
+                fy_last = fy_first + 1
             yr_lo, yr_hi = st.slider(
-                "Analysis window", 2015, 2026, (2020, 2026),
+                "Analysis window", fy_first, fy_last,
+                (max(fy_first, fy_last - 7), fy_last),
                 key="rhet_years",
+                help="Scopes both the congressional figures and the optional "
+                     "AI signal below.",
             )
             sel_cands = [rcands[rlabels.index(l)] for l in picked]
             display_name = sel_cands[0]["name"] if sel_cands else ""
@@ -851,6 +881,16 @@ with tab_rhetoric:
                     ca_series = ca.get_program_series(ca_pes, ca_agencies)
                     ca_rows = ca.get_actions(ca_pes, ca_agencies)
 
+                # The analysis window scopes this section too. Remember what
+                # exists outside it so an empty window is never mistaken for
+                # "no action on record".
+                years_on_record = sorted(
+                    ca_rows["fiscal_year"].unique().to_list())
+                in_window = pl.col("fiscal_year").is_between(yr_lo, yr_hi)
+                ca_rows = ca_rows.filter(in_window)
+                if not ca_series.is_empty():   # schema-less when nothing matched
+                    ca_series = ca_series.filter(in_window)
+
                 # House and Senate score the same request separately, so one
                 # chamber is chosen BEFORE anything is totalled. Summing both
                 # would report roughly double the real dollars.
@@ -870,7 +910,16 @@ with tab_rhetoric:
                     ca_rows = ca_rows.filter(pl.col("chamber") == chamber_pick)
 
                 ca_sum = ca_summarize(ca_series)
-                st.markdown(ca_headline(display_name, ca_sum))
+                if not ca_sum["years_covered"] and years_on_record:
+                    st.markdown(
+                        f"**No committee action on "
+                        f"{escape_dollars(display_name)} inside "
+                        f"FY{yr_lo}–FY{yr_hi}.** Actions are on record for "
+                        f"FY{years_on_record[0]}–FY{years_on_record[-1]} — "
+                        "widen the window to see them."
+                    )
+                else:
+                    st.markdown(ca_headline(display_name, ca_sum))
 
                 if ca_sum["years_covered"]:
                     cdf = ca_series.to_pandas()
@@ -934,7 +983,7 @@ with tab_rhetoric:
                         .properties(height=220)
                     )
                     st.altair_chart(zero_rule + delta_bars,
-                                    use_container_width=True)
+                                    width="stretch")
 
                     biggest = ca_sum["largest_cut"] or ca_sum["largest_add"]
                     if biggest and biggest.get("rationale"):
@@ -954,7 +1003,7 @@ with tab_rhetoric:
                                 "authorized_k", "rationale",
                                 "report_citation",
                             ]],
-                            use_container_width=True, hide_index=True,
+                            width="stretch", hide_index=True,
                             column_config={
                                 "fiscal_year": "FY",
                                 "chamber": "Chamber",
@@ -979,10 +1028,13 @@ with tab_rhetoric:
             enricher_r = get_enricher()
             if enricher_r is None:
                 st.caption(
-                    "Optional — set the GEMINI_API_KEY environment variable "
-                    "and restart to add an AI-characterized signal for how "
-                    "much the program was publicly discussed. The "
-                    "congressional figures above need no key."
+                    "Optional, and off in this instance — no Gemini API key "
+                    "is configured. With your own GEMINI_API_KEY (an "
+                    "environment variable locally, or a Secret on Streamlit "
+                    "Community Cloud) and a restart, this adds an "
+                    "AI-characterized signal for how much the program was "
+                    "publicly discussed. The congressional figures above "
+                    "need no key."
                 )
             elif not sel_cands:
                 st.caption("Select at least one program element above.")
@@ -1140,7 +1192,7 @@ with tab_rhetoric:
                             .properties(height=160)
                         )
                         st.altair_chart(alt.vconcat(top_chart, bottom_chart),
-                                        use_container_width=True)
+                                        width="stretch")
 
                         merged = r["merged"].copy()
                         merged["statement"] = merged.apply(
@@ -1153,7 +1205,7 @@ with tab_rhetoric:
                             merged[["fiscal_year", "mention_intensity",
                                     "positive_pct", "stated_priority",
                                     "amount_m", "yoy_pct", "statement"]],
-                            use_container_width=True, hide_index=True,
+                            width="stretch", hide_index=True,
                             column_config={
                                 "fiscal_year": "FY",
                                 "mention_intensity": st.column_config
@@ -1210,15 +1262,23 @@ with tab_coverage:
     s3.metric("Programs with narratives", f"{stats['narrative_pes']:,}")
     s4.metric("Work line items", f"{stats['accomplishments']:,}")
 
-    try:
-        from analysis.ai_budget import SpendLedger
-        used = SpendLedger.fresh_calls_this_month(current_user_id())
-        allowance = config_module.AI_FREE_CREDITS_PER_MONTH
-        if allowance is not None:
-            st.caption(f"Fresh AI lookups used this month: "
-                       f"{used} of {allowance}. Saved analysis is unlimited.")
-    except Exception:
-        pass
+    if get_enricher() is None:
+        st.caption(
+            "AI features are off in this instance — no Gemini API key is "
+            "configured. Everything shown comes from the local database and "
+            "USAspending.gov."
+        )
+    else:
+        try:
+            from analysis.ai_budget import SpendLedger
+            used = SpendLedger.fresh_calls_this_month(current_user_id())
+            allowance = config_module.AI_FREE_CREDITS_PER_MONTH
+            if allowance is not None:
+                st.caption(f"Fresh AI lookups used this month: "
+                           f"{used} of {allowance}. Saved analysis is "
+                           "unlimited.")
+        except Exception:
+            pass
 
     st.markdown(f"""
 | Source | Coverage | How it's used |
