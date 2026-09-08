@@ -10,7 +10,7 @@ import logging
 import os
 import shutil
 import tempfile
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional
 
@@ -28,6 +28,11 @@ from sqlalchemy.orm import (
 logger = logging.getLogger(__name__)
 
 
+def _utcnow() -> datetime:
+    """Naive UTC for compatibility with the existing SQLite columns."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
 class Base(DeclarativeBase):
     """Declarative base for SQLAlchemy 2.0 models."""
     pass
@@ -43,7 +48,7 @@ class SourceDocument(Base):
     filename: Mapped[str] = mapped_column(String(255), unique=True, index=True)
     document_type: Mapped[str] = mapped_column(String(50))
     publication_year: Mapped[int] = mapped_column(Integer, index=True)
-    processed_date: Mapped[datetime] = mapped_column(default=datetime.utcnow)
+    processed_date: Mapped[datetime] = mapped_column(default=_utcnow)
 
     program_elements: Mapped[List["ProgramElement"]] = relationship(
         back_populates="source_document", cascade="all, delete-orphan"
@@ -142,7 +147,7 @@ class AICache(Base):
     model: Mapped[str] = mapped_column(String(100))
     prompt_version: Mapped[int] = mapped_column(Integer, default=1)
     payload_json: Mapped[str] = mapped_column(Text)
-    created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow, index=True)
+    created_at: Mapped[datetime] = mapped_column(default=_utcnow, index=True)
     expires_at: Mapped[datetime] = mapped_column(index=True)
 
 
@@ -162,7 +167,7 @@ class AIUserHistory(Base):
     model: Mapped[str] = mapped_column(String(100))
     payload_json: Mapped[str] = mapped_column(Text)
     search_suggestions_html: Mapped[Optional[str]] = mapped_column(Text)
-    created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow, index=True)
+    created_at: Mapped[datetime] = mapped_column(default=_utcnow, index=True)
     expires_at: Mapped[datetime] = mapped_column(index=True)
 
 
@@ -176,7 +181,7 @@ class AISpend(Base):
     __tablename__ = "ai_spend"
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    ts: Mapped[datetime] = mapped_column(default=datetime.utcnow, index=True)
+    ts: Mapped[datetime] = mapped_column(default=_utcnow, index=True)
     user_id: Mapped[str] = mapped_column(String(128), index=True, default="local")
     task: Mapped[str] = mapped_column(String(50), index=True)
     model: Mapped[str] = mapped_column(String(100))
@@ -198,7 +203,7 @@ class SearchLog(Base):
     __tablename__ = "search_log"
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    ts: Mapped[datetime] = mapped_column(default=datetime.utcnow, index=True)
+    ts: Mapped[datetime] = mapped_column(default=_utcnow, index=True)
     user_id: Mapped[str] = mapped_column(String(128), default="local")
     query: Mapped[str] = mapped_column(String(500), index=True)
     matched_pe: Mapped[Optional[str]] = mapped_column(String(50))
@@ -243,7 +248,7 @@ class PECongressionalAction(Base):
     # 1 when request_k matched the FY's 'CY Request' funding line for this PE
     reconciled: Mapped[int] = mapped_column(Integer, default=0, index=True)
     content_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
-    ingested_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
+    ingested_at: Mapped[datetime] = mapped_column(default=_utcnow)
 
 
 def ensure_sqlite_file(db_uri: str) -> None:

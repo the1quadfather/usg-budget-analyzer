@@ -91,13 +91,23 @@ class ProgramLinker:
 
         top = candidates[0]
         runner_up = next(
-            (c for c in candidates[1:] if c["pe_number"] != top["pe_number"]),
+            (
+                c for c in candidates[1:]
+                if (c["pe_number"], c["agency"])
+                != (top["pe_number"], top["agency"])
+            ),
             None,
         )
         ambiguous = (
-            top["strategy"] != "PE_NUMBER"
-            and runner_up is not None
-            and (top["score"] - runner_up["score"]) < self.ambiguity_margin
+            runner_up is not None
+            and (
+                # An exact number can still span agencies (notably programs
+                # transferred from Air Force to Space Force).  Equal exact
+                # hits need a human/AI agency choice instead of silently
+                # defaulting to insertion order.
+                top["strategy"] == "PE_NUMBER"
+                or (top["score"] - runner_up["score"]) < self.ambiguity_margin
+            )
         )
 
         base_result.update({

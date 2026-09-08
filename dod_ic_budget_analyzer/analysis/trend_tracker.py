@@ -19,6 +19,7 @@ logger = logging.getLogger(__name__)
 # CY Request in PB(Y+1), and PY Actual in PB(Y+2). Summing them double- or
 # triple-counts the year, so trends pick ONE per year by reliability.
 FUNDING_TYPE_PRIORITY = {"PY Actual": 0, "CY Request": 1, "BY Request": 2}
+PRIMARY_FUNDING_TYPES = tuple(FUNDING_TYPE_PRIORITY)
 
 
 class TrendTracker:
@@ -85,7 +86,10 @@ class TrendTracker:
                     func.sum(FundingLine.amount_thousands).label("total_funding")
                 )
                 .join(FundingLine, ProgramElement.id == FundingLine.program_element_id)
-                .where(FundingLine.fiscal_year.between(start_year, end_year))
+                .where(
+                    FundingLine.fiscal_year.between(start_year, end_year),
+                    FundingLine.funding_type.in_(PRIMARY_FUNDING_TYPES),
+                )
                 .group_by(ProgramElement.agency, FundingLine.fiscal_year, FundingLine.funding_type)
             )
 
@@ -124,6 +128,7 @@ class TrendTracker:
             .where(
                 ProgramElement.pe_number == pe_number,
                 ProgramElement.agency == agency,
+                FundingLine.funding_type.in_(PRIMARY_FUNDING_TYPES),
             )
         )
         results = self.session.execute(stmt).all()
@@ -141,8 +146,14 @@ class TrendTracker:
             "CY Request": "Enacted/CY",
             "BY Request": "Request",
         }
+        # A PE can legitimately have multiple R-1 lines in one publication
+        # (for example, separate budget activities).  Collapse those lines
+        # within a basis before choosing the most reliable basis for the year;
+        # choosing an arbitrary first row understates the program total.
         return (
-            df.with_columns(
+            df.group_by(["fiscal_year", "funding_type"])
+            .agg(pl.col("amount_thousands").sum())
+            .with_columns(
                 pl.col("funding_type")
                 .replace_strict(FUNDING_TYPE_PRIORITY, default=9)
                 .alias("_prio")
@@ -171,7 +182,10 @@ class TrendTracker:
                     func.sum(FundingLine.amount_thousands).label("total_funding")
                 )
                 .join(FundingLine, ProgramElement.id == FundingLine.program_element_id)
-                .where(FundingLine.fiscal_year.between(start_year, end_year))
+                .where(
+                    FundingLine.fiscal_year.between(start_year, end_year),
+                    FundingLine.funding_type.in_(PRIMARY_FUNDING_TYPES),
+                )
                 .group_by(ProgramElement.pe_number, ProgramElement.program_name, ProgramElement.agency, FundingLine.fiscal_year, FundingLine.funding_type)
             )
 

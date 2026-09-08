@@ -232,6 +232,10 @@ def _month_start(when: Optional[datetime] = None) -> datetime:
     return datetime(when.year, when.month, 1)
 
 
+class LedgerUnavailable(RuntimeError):
+    """The spend ledger could not be read or durably updated."""
+
+
 class SpendLedger:
     """Append-only record of AI calls; month-to-date queries read from it."""
 
@@ -239,15 +243,19 @@ class SpendLedger:
     def record(task: str, model: str, user_id: str = "local",
                input_tokens: int = 0, output_tokens: int = 0,
                thought_tokens: int = 0, search_queries: int = 0,
-               cache_hit: bool = False, ok: bool = True) -> float:
+               cache_hit: bool = False, ok: bool = True,
+               raise_on_error: bool = False) -> float:
         """Compute the call's cost, persist the row, and return the cost."""
         cost = 0.0
-        if not cache_hit:
-            cost = token_cost(model, input_tokens, output_tokens, thought_tokens)
-            if search_queries:
-                cost += grounding_cost(
-                    search_queries, SpendLedger.queries_this_month())
         try:
+            if not cache_hit:
+                cost = token_cost(
+                    model, input_tokens, output_tokens, thought_tokens
+                )
+                if search_queries:
+                    cost += grounding_cost(
+                        search_queries, SpendLedger.queries_this_month()
+                    )
             with session_factory()() as s:
                 s.add(AISpend(
                     ts=_utcnow(), user_id=user_id, task=task,
@@ -259,6 +267,8 @@ class SpendLedger:
                 s.commit()
         except Exception as e:
             logger.warning(f"Spend ledger write failed ({type(e).__name__}: {e}).")
+            if raise_on_error:
+                raise LedgerUnavailable("AI spend could not be recorded") from e
         return cost
 
     @staticmethod
@@ -272,7 +282,7 @@ class SpendLedger:
                 return float(s.execute(q).scalar() or 0)
         except Exception as e:
             logger.warning(f"Spend ledger read failed ({type(e).__name__}: {e}).")
-            return 0.0
+            raise LedgerUnavailable("AI spend ledger is unavailable") from e
 
     @staticmethod
     def month_to_date(user_id: Optional[str] = None) -> float:
@@ -297,7 +307,7 @@ class SpendLedger:
                 ).scalar() or 0)
         except Exception as e:
             logger.warning(f"Credit count failed ({type(e).__name__}: {e}).")
-            return 0
+            raise LedgerUnavailable("AI credit ledger is unavailable") from e
 
 
 # ── Governor ──────────────────────────────────────────────────────────────────
@@ -318,27 +328,34 @@ def budget_guard(task: str, user_id: str = "local",
     `credits` overrides the free-tier monthly allowance - pass a paid tier's
     larger number, or None to use config.AI_FREE_CREDITS_PER_MONTH.
     """
-    cap = config.AI_MONTHLY_BUDGET_USD
-    if cap is not None:
-        spent = SpendLedger.month_to_date()
-        if spent >= cap:
-            return Decision(
-                False, "budget",
-                f"Fresh AI lookups are paused for the rest of this month "
-                f"(${spent:,.2f} of the ${cap:,.2f} ceiling used). Everything "
-                "already analyzed still loads normally.",
-            )
+    try:
+        cap = config.AI_MONTHLY_BUDGET_USD
+        if cap is not None:
+            spent = SpendLedger.month_to_date()
+            if spent >= cap:
+                return Decision(
+                    False, "budget",
+                    f"Fresh AI lookups are paused for the rest of this month "
+                    f"(${spent:,.2f} of the ${cap:,.2f} ceiling used). Everything "
+                    "already analyzed still loads normally.",
+                )
 
-    allowance = (config.AI_FREE_CREDITS_PER_MONTH if credits is None
-                 else credits)
-    if allowance is not None:
-        used = SpendLedger.fresh_calls_this_month(user_id)
-        if used >= allowance:
-            return Decision(
-                False, "credits",
-                f"You've used all {allowance} fresh AI lookups for this month. "
-                "Previously analyzed programs still load instantly.",
-            )
+        allowance = (config.AI_FREE_CREDITS_PER_MONTH if credits is None
+                     else credits)
+        if allowance is not None:
+            used = SpendLedger.fresh_calls_this_month(user_id)
+            if used >= allowance:
+                return Decision(
+                    False, "credits",
+                    f"You've used all {allowance} fresh AI lookups for this month. "
+                    "Previously analyzed programs still load instantly.",
+                )
+    except LedgerUnavailable:
+        return Decision(
+            False, "metering",
+            "Fresh AI lookups are temporarily paused because the spend "
+            "ledger is unavailable. Saved analysis still loads normally.",
+        )
     return Decision(True)
 
 

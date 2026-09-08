@@ -236,6 +236,7 @@ class SpendingExplorer:
                     "time_period": _fy_period(fy_start, fy_end),
                     "award_type_codes": type_codes,
                     "keywords": keywords,
+                    "agencies": self.DOD_FUNDING,
                 },
                 "fields": [
                     "Sub-Award ID", "Sub-Awardee Name", "Sub-Award Amount",

@@ -14,7 +14,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from storage.db import FundingLine, ProgramElement
-from analysis.trend_tracker import TrendTracker
+from analysis.trend_tracker import PRIMARY_FUNDING_TYPES, TrendTracker
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +43,10 @@ class GapAnalyzer:
                     FundingLine.amount_thousands
                 )
                 .join(FundingLine, ProgramElement.id == FundingLine.program_element_id)
-                .where(ProgramElement.id.in_(pe_ids))
+                .where(
+                    ProgramElement.id.in_(pe_ids),
+                    FundingLine.funding_type.in_(PRIMARY_FUNDING_TYPES),
+                )
             )
 
             results = self.session.execute(stmt).all()
@@ -60,6 +63,10 @@ class GapAnalyzer:
             }
 
             df = pl.DataFrame(results, schema=schema, orient="row")
+            df = (
+                df.group_by(["pe_id", "fiscal_year", "funding_type"])
+                .agg(pl.col("amount_thousands").sum())
+            )
             # One figure per (PE, FY) - actuals beat enacted/CY beat requests.
             # Summing across funding types double/triple-counts each year.
             return TrendTracker._prefer_funding_type(df, keys=["pe_id"])

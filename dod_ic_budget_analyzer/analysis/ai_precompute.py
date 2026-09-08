@@ -75,7 +75,10 @@ def funding_targets(limit: int) -> list[dict]:
     """
     with session_factory()() as s:
         latest_fy = s.execute(
-            select(func.max(FundingLine.fiscal_year))).scalar()
+            select(func.max(FundingLine.fiscal_year)).where(
+                FundingLine.funding_type == "BY Request"
+            )
+        ).scalar()
         if latest_fy is None:
             return []
         rows = s.execute(
@@ -85,6 +88,7 @@ def funding_targets(limit: int) -> list[dict]:
             .join(FundingLine,
                   FundingLine.program_element_id == ProgramElement.id)
             .where(FundingLine.fiscal_year == latest_fy,
+                   FundingLine.funding_type == "BY Request",
                    ProgramElement.pe_number != "",
                    ProgramElement.pe_number.is_not(None),
                    ProgramElement.program_name.is_not(None))
@@ -150,7 +154,7 @@ def run(limit: int, source: str, dry_run: bool) -> int:
     # it would exceed it - a scheduled job is exactly the thing that would
     # otherwise quietly drain a month's budget overnight.
     guard = budget_guard("adjudicate", user_id="precompute", credits=None)
-    if not guard.allowed and guard.reason == "budget":
+    if not guard.allowed:
         print(f"Refusing to start: {guard.message}")
         return 1
 

@@ -34,6 +34,7 @@ import json
 import logging
 import os
 import re
+import threading
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -42,9 +43,20 @@ from typing import Any, Callable, List, Optional
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 import config
-from analysis.ai_budget import AICache, SpendLedger, budget_guard
+from analysis.ai_budget import (
+    AICache,
+    LedgerUnavailable,
+    SpendLedger,
+    budget_guard,
+)
 
 logger = logging.getLogger(__name__)
+
+# Streamlit serves multiple sessions from one process. Serialize the
+# guard/call/ledger sequence so concurrent sessions cannot all pass the same
+# pre-call credit check before any of them records its spend.
+_AI_CALL_LOCK = threading.Lock()
+_METERING_FAILED = False
 
 # Bump a task's version when its prompt or output shape changes, so stale
 # answers from the old prompt are never served.
@@ -207,27 +219,51 @@ class GeminiEnricher:
             # error - the UI turns it into an offer to fetch.
             return EnrichmentResult(payload=empty, cold=True)
 
-        decision = budget_guard(task, user_id=user_id, credits=credits)
-        if not decision.allowed:
-            logger.info(f"AI call refused ({decision.reason}): {task}")
-            return EnrichmentResult(payload=empty, blocked=True,
-                                    message=decision.message)
+        global _METERING_FAILED
+        with _AI_CALL_LOCK:
+            if _METERING_FAILED:
+                return EnrichmentResult(
+                    payload=empty, blocked=True,
+                    message=(
+                        "Fresh AI lookups are paused because a prior call "
+                        "could not be recorded in the spend ledger. Restart "
+                        "after fixing the database connection."
+                    ),
+                )
 
-        try:
-            payload, usage = call()
-            ok = True
-        except Exception as e:
-            logger.warning(f"Gemini {task} failed: {e}")
-            payload, usage, ok = empty, {}, False
+            decision = budget_guard(task, user_id=user_id, credits=credits)
+            if not decision.allowed:
+                logger.info(f"AI call refused ({decision.reason}): {task}")
+                return EnrichmentResult(payload=empty, blocked=True,
+                                        message=decision.message)
 
-        SpendLedger.record(
-            task, self.model, user_id=user_id,
-            input_tokens=usage.get("input_tokens", 0),
-            output_tokens=usage.get("output_tokens", 0),
-            thought_tokens=usage.get("thought_tokens", 0),
-            search_queries=usage.get("search_queries", 0),
-            cache_hit=False, ok=ok,
-        )
+            try:
+                payload, usage = call()
+                ok = True
+            except Exception as e:
+                logger.warning(f"Gemini {task} failed: {e}")
+                payload, usage, ok = empty, {}, False
+
+            try:
+                SpendLedger.record(
+                    task, self.model, user_id=user_id,
+                    input_tokens=usage.get("input_tokens", 0),
+                    output_tokens=usage.get("output_tokens", 0),
+                    thought_tokens=usage.get("thought_tokens", 0),
+                    search_queries=usage.get("search_queries", 0),
+                    cache_hit=False, ok=ok, raise_on_error=True,
+                )
+            except LedgerUnavailable:
+                # One call may already have reached the provider, but never
+                # permit an unbounded series of unmetered calls afterward.
+                _METERING_FAILED = True
+                return EnrichmentResult(
+                    payload=empty, blocked=True,
+                    message=(
+                        "The AI response could not be recorded, so fresh "
+                        "lookups are paused to protect the spending limit."
+                    ),
+                )
         if not ok:
             return EnrichmentResult(
                 payload=empty, blocked=True,
@@ -301,10 +337,14 @@ class GeminiEnricher:
             verdict = json.loads(resp.text)
             # Only trust verdicts that point at an actual candidate
             if not verdict.get("no_match"):
-                known = {c["pe_number"] for c in candidates}
-                if verdict.get("pe_number") not in known:
+                known = {(c["pe_number"], c["agency"]) for c in candidates}
+                picked = (verdict.get("pe_number"), verdict.get("agency"))
+                if picked not in known:
                     verdict["no_match"] = True
-                    verdict["rationale"] += " (Model named a PE outside the candidate list - discarded.)"
+                    verdict["rationale"] += (
+                        " (Model named a PE/agency pair outside the candidate "
+                        "list - discarded.)"
+                    )
             return verdict, _usage(resp)
 
         return self._governed("adjudicate", params, user_id, allow_fresh,

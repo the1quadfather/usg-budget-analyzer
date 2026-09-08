@@ -16,11 +16,12 @@ external, slow-or-billable calls (USAspending.gov, AI) sit behind buttons
 labeled with their source.
 """
 
+from pathlib import Path
+
 import altair as alt
 import pandas as pd
-import streamlit as st
 import polars as pl
-from pathlib import Path
+import streamlit as st
 
 import config as config_module
 from storage.db import get_engine, get_session_factory
@@ -28,6 +29,7 @@ from matching.fuzzy_matcher import ProgramMatcher
 from analysis.program_linker import ProgramLinker
 from analysis.trend_tracker import TrendTracker
 from analysis.text_render import escape_dollars
+from analysis.user_identity import streamlit_user_id
 
 # --- Configuration & State Setup ---
 st.set_page_config(page_title="DoD Budget Explorer", layout="wide")
@@ -76,16 +78,14 @@ def get_enricher():
 
 def current_user_id() -> str:
     """
-    Who to bill, and whose grounded history to read. Anonymous sessions share
-    the "local" identity; wiring st.login() later replaces this without any
-    caller needing to change.
+    Who to bill, and whose grounded history to read.
+
+    Authenticated users have a durable identity. Anonymous users receive a
+    random identity scoped to their Streamlit session so two visitors can
+    never read one another's grounded-result history. The global dollar cap
+    remains the backstop when a new anonymous session receives fresh credits.
     """
-    try:
-        if st.user.is_logged_in:
-            return str(st.user.sub or st.user.email or "local")
-    except Exception:
-        pass
-    return "local"
+    return streamlit_user_id(st)
 
 
 def log_search(query: str, result: dict) -> None:
@@ -200,6 +200,22 @@ def fetch_coverage_stats() -> dict:
                 stats[key] = c.execute(text(q)).scalar() or 0
             except Exception:
                 stats[key] = 0
+        try:
+            rows = c.execute(text(
+                "SELECT agency, COUNT(DISTINCT pe_number), "
+                "MIN(fiscal_year), MAX(fiscal_year) "
+                "FROM pe_narratives GROUP BY agency ORDER BY agency"
+            )).all()
+            stats["narrative_by_agency"] = {
+                agency: {
+                    "programs": int(programs),
+                    "first_fy": int(first_fy),
+                    "last_fy": int(last_fy),
+                }
+                for agency, programs, first_fy, last_fy in rows
+            }
+        except Exception:
+            stats["narrative_by_agency"] = {}
     return stats
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -418,7 +434,10 @@ with tab_finder:
             default_idx = 0
             if adjudication and not adjudication.get("no_match"):
                 for i, c in enumerate(candidates):
-                    if c["pe_number"] == adjudication["pe_number"]:
+                    if (
+                        c["pe_number"] == adjudication["pe_number"]
+                        and c["agency"] == adjudication["agency"]
+                    ):
                         default_idx = i
                         break
             if len(candidates) > 1:
@@ -573,9 +592,8 @@ with tab_finder:
                 if not narrs and not accs:
                     st.info(
                         "No justification narrative for this program. "
-                        "Narrative books are ingested for Defense-Wide "
-                        "components (PB2026–PB2027); Army, Navy, and Air "
-                        "Force publish theirs as PDF only — not yet ingested."
+                        "R-2 coverage varies by component and fiscal year; "
+                        "see Data Coverage for the currently ingested corpus."
                     )
                 else:
                     pe_level = [n for n in narrs if n.project_number == ""]
@@ -1280,11 +1298,21 @@ with tab_coverage:
         except Exception:
             pass
 
+    narrative_coverage = stats.get("narrative_by_agency", {})
+    if narrative_coverage:
+        r2_detail = ", ".join(
+            f"{agency} {detail['programs']:,} "
+            f"(FY{detail['first_fy']}–FY{detail['last_fy']})"
+            for agency, detail in narrative_coverage.items()
+        )
+    else:
+        r2_detail = "No narratives currently ingested"
+
     st.markdown(f"""
 | Source | Coverage | How it's used |
 |---|---|---|
 | **R-1 budget exhibits** (comptroller.war.gov) | FY1998–FY2027 requests; FY2026 enacted. Official XLSX for FY2012+; parsed PDFs before that | Funding trends and program funding histories (local database) |
-| **R-2 justification books** (official XML) | Defense-Wide components, PB2026–PB2027: {stats['narratives']:,} narratives, {stats['accomplishments']:,} accomplishment line items | Mission descriptions and "Plans & Work"; also sharpens program matching |
+| **R-2 justification books** (official XML and service PDFs) | {stats['narratives']:,} narratives and {stats['accomplishments']:,} accomplishment line items. {r2_detail} | Mission descriptions and "Plans & Work"; also sharpens program matching |
 | **USAspending.gov** (live queries) | Prime awards (contracts + grants/cooperative agreements), subawards, account-level obligations | "Contracts & Awards" and "Who got paid" |
 | **AI enrichment** (optional) | Google-grounded search and match resolution | "In the News", "Rhetoric vs. Budget", and ambiguity resolution |
 
@@ -1294,7 +1322,7 @@ with tab_coverage:
 - **Umbrella vehicles hide task detail.** Work under PIAs, OTAs, and IDIQ task orders often posts under a generic umbrella description; the subaward search catches some, not all.
 - **Other Transactions** are not a searchable instrument group in the USAspending API.
 - **Timing:** DoD awards post with a ~90-day display delay, and the current fiscal year is always partial.
-- **Service justification books** (Army, Navy, Air Force) are published as PDF only — narratives currently cover Defense-Wide components. FY2025-and-earlier books are also PDF-only. Two broken links upstream: MDA's PB2027 and CYBERCOM's PB2026 XML (each covered by the other cycle).
+- **Justification coverage varies by component and year.** Army has no published FY2023 RDT&E books in the ingested sources; Air Force and Space Force archive coverage currently ends at FY2024. An absent program/year may therefore reflect a source gap rather than no planned work.
 - **Classified programs** appear only as aggregate lines; the Intelligence Community publishes topline figures only.
 
 **How the AI features are stored and metered**

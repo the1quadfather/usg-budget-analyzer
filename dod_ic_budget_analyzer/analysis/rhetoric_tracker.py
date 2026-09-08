@@ -87,6 +87,7 @@ def align_rhetoric_funding(
 
     # Alignment: Spearman between intensity(Y) and funding(Y + lead)
     by_lead = {}
+    overlap_by_lead = {}
     for lead in (0, 1, 2):
         shifted = fund.copy()
         shifted["fiscal_year"] = shifted["fiscal_year"] - lead
@@ -100,14 +101,14 @@ def align_rhetoric_funding(
         rho = pair["mention_intensity"].corr(pair["amount_m"], method="spearman")
         if pd.notna(rho):
             by_lead[lead] = round(float(rho), 3)
+            overlap_by_lead[lead] = len(pair)
 
     if by_lead:
         best_lead = max(by_lead, key=lambda k: abs(by_lead[k]))
-        shifted_n = len(sig) - best_lead
         result["alignment"] = {
             "coefficient": by_lead[best_lead],
             "lead_years": best_lead,
-            "n_years": shifted_n,
+            "n_years": overlap_by_lead[best_lead],
             "by_lead": by_lead,
         }
     return result

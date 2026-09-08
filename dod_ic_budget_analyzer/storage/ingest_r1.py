@@ -39,6 +39,11 @@ class R1Ingestor:
         df = pl.read_parquet(filepath)
         
         self._preload_caches()
+        # SourceDocument.filename is the ingestion identity.  Only documents
+        # present before this run are skipped; subsequent rows from a newly
+        # encountered document must still be processed.
+        already_ingested_docs = set(self._doc_cache)
+        skipped_rows = 0
         
         documents_to_add = {}
         pes_to_add = {}
@@ -50,6 +55,9 @@ class R1Ingestor:
             
             # 1. Resolve Source Document
             filename = row["source_file"]
+            if filename in already_ingested_docs:
+                skipped_rows += 1
+                continue
             if filename not in self._doc_cache and filename not in documents_to_add:
                 doc = SourceDocument(
                     filename=filename,
@@ -95,7 +103,14 @@ class R1Ingestor:
             amounts = [
                 (pub_year - 2, "PY Actual", row["py_amount"]),
                 (pub_year - 1, "CY Request", row["cy_amount"]),
-                (pub_year, "BY Request", row["by_amount"])
+                (pub_year, "BY Request", row["by_amount"]),
+                # XLSX exhibits split reconciliation/mandatory money from the
+                # primary discretionary series.  Persist it under distinct
+                # funding types so it is retained without entering the
+                # discretionary trend calculations.
+                (pub_year - 2, "PY Mandatory", row.get("py_mandatory_amount")),
+                (pub_year - 1, "CY Mandatory", row.get("cy_mandatory_amount")),
+                (pub_year, "BY Mandatory", row.get("by_mandatory_amount")),
             ]
 
             for fy, f_type, amt in amounts:
@@ -115,5 +130,9 @@ class R1Ingestor:
         if funding_lines:
             self.session.bulk_save_objects(funding_lines)
             self.session.commit()
-            
+        if skipped_rows:
+            logger.info(
+                f"Skipped {skipped_rows} row(s) from already-ingested source documents"
+            )
+
         logger.info("Ingestion complete.")
