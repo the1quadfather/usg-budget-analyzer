@@ -107,6 +107,32 @@ def _sync_profile_view(view: str) -> None:
     st.query_params.update(tab="finder", view=view)
 
 
+def _sync_main_tab_url() -> None:
+    """Mirror the tracked, stable tab selection into the shareable URL."""
+    keys_by_label = {
+        "Budget Trends": "trends",
+        "Program Finder": "finder",
+        "Rhetoric vs. Budget": "rhetoric",
+        "Data Coverage": "coverage",
+    }
+    selected = st.session_state.get("main_tab")
+    if selected in keys_by_label:
+        st.query_params["tab"] = keys_by_label[selected]
+
+
+def _sync_profile_tab_url(state_key: str) -> None:
+    """Mirror a tracked program-profile tab into the shareable URL."""
+    keys_by_label = {
+        "Funding": "funding",
+        "Plans & Work": "plans",
+        "Contracts & Awards": "awards",
+        "In the News": "news",
+    }
+    selected = st.session_state.get(state_key)
+    if selected in keys_by_label:
+        st.query_params.update(tab="finder", view=keys_by_label[selected])
+
+
 def _sync_dollar_url() -> None:
     st.query_params["dollars"] = (
         "constant-2025"
@@ -122,16 +148,28 @@ def init_db_connection():
     engine = get_engine(DB_PATH)
     return get_session_factory(engine)
 
+
+@st.cache_resource
+def load_lexical_linker():
+    """Build the fast matcher without importing the transformer stack."""
+    SessionFactory = init_db_connection()
+    with SessionFactory() as session:
+        fuzzy = ProgramMatcher(session)
+    return ProgramLinker(
+        fuzzy, None, fuzzy_threshold=80.0, semantic_threshold=0.45
+    )
+
+
 @st.cache_resource
 def load_matching_models():
     """
     Builds the linker once per process. Loaded lazily (first search), and
     degrades to lexical-only matching if the PyTorch stack is unavailable.
     """
+    lexical = load_lexical_linker()
     SessionFactory = init_db_connection()
+    semantic = None
     with SessionFactory() as session:
-        fuzzy = ProgramMatcher(session)
-        semantic = None
         try:
             from matching.semantic_matcher import SemanticMatcher
             semantic = SemanticMatcher(session)
@@ -140,10 +178,22 @@ def load_matching_models():
                 f"Semantic matching unavailable ({type(e).__name__}) — "
                 "running name-similarity matching only."
             )
-        linker = ProgramLinker(
-            fuzzy, semantic, fuzzy_threshold=80.0, semantic_threshold=0.45
-        )
-    return linker
+    return ProgramLinker(
+        lexical.fuzzy,
+        semantic,
+        fuzzy_threshold=80.0, semantic_threshold=0.45,
+    )
+
+
+def link_program_query(query: str) -> dict:
+    """Avoid loading the transformer for exact or decisive lexical hits."""
+    lexical_result = load_lexical_linker().link_query(query)
+    candidates = lexical_result.get("candidates", [])
+    if candidates:
+        top = candidates[0]
+        if top["strategy"] == "PE_NUMBER" or top["score"] >= 0.95:
+            return lexical_result
+    return load_matching_models().link_query(query)
 
 @st.cache_resource
 def get_enricher():
@@ -533,16 +583,20 @@ tab_definitions = [
 requested_tab = st.query_params.get("tab", "trends")
 if requested_tab not in {key for key, _ in tab_definitions}:
     requested_tab = "trends"
-# Streamlit tabs cannot be selected programmatically. Putting the requested
-# view first makes a shared URL open on the intended content without brittle
-# browser-side JavaScript; callbacks below keep the URL current as users work.
-ordered_tabs = sorted(
-    tab_definitions, key=lambda item: item[0] != requested_tab
+tab_labels = [label for _, label in tab_definitions]
+default_tab = dict(tab_definitions)[requested_tab]
+# Keep label/container order immutable. Reordering this list across reruns
+# causes Streamlit's index-keyed frontend panels to retain the old selection,
+# which maps one tab's content under another tab's label.
+tab_containers = st.tabs(
+    tab_labels,
+    default=default_tab,
+    key="main_tab",
+    on_change=_sync_main_tab_url,
 )
-tab_containers = st.tabs([label for _, label in ordered_tabs])
 tabs_by_key = {
     key: container
-    for (key, _), container in zip(ordered_tabs, tab_containers)
+    for (key, _), container in zip(tab_definitions, tab_containers)
 }
 tab_trends = tabs_by_key["trends"]
 tab_finder = tabs_by_key["finder"]
@@ -697,8 +751,7 @@ with tab_finder:
 
     if query:
         with st.spinner("Searching programs..."):
-            linker = load_matching_models()
-            result = linker.link_query(query)
+            result = link_program_query(query)
 
         # Log demand once per query, not once per rerun: every widget click
         # anywhere in the app re-executes this block while the box is filled.
@@ -833,13 +886,22 @@ with tab_finder:
             requested_view = st.query_params.get("view", "funding")
             if requested_view not in {key for key, _ in profile_definitions}:
                 requested_view = "funding"
-            ordered_views = sorted(
-                profile_definitions, key=lambda item: item[0] != requested_view
+            profile_labels = [label for _, label in profile_definitions]
+            profile_state_key = (
+                f"profile_tab::{sel['pe_number']}::{sel['agency']}"
             )
-            profile_containers = st.tabs([label for _, label in ordered_views])
+            profile_containers = st.tabs(
+                profile_labels,
+                default=dict(profile_definitions)[requested_view],
+                key=profile_state_key,
+                on_change=_sync_profile_tab_url,
+                args=(profile_state_key,),
+            )
             profile_tabs = {
                 key: container
-                for (key, _), container in zip(ordered_views, profile_containers)
+                for (key, _), container in zip(
+                    profile_definitions, profile_containers
+                )
             }
             sub_funding = profile_tabs["funding"]
             sub_plans = profile_tabs["plans"]
