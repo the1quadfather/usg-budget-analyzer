@@ -101,7 +101,7 @@ class GapAnalyzer:
 
         df_wide = df_agg.pivot(
             index="pe_id",
-            columns="fiscal_year",
+            on="fiscal_year",
             values="total_funding",
             aggregate_function="sum"
         ).fill_null(0.0)

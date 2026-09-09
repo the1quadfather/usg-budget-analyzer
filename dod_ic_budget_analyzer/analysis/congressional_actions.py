@@ -22,7 +22,7 @@ Two things callers must respect:
 import logging
 
 import polars as pl
-from sqlalchemy import func, select
+from sqlalchemy import func, select, tuple_
 from sqlalchemy.orm import Session
 
 from analysis.text_render import escape_dollars
@@ -102,10 +102,18 @@ class CongressionalActions:
             PECongressionalAction.committee_delta_k,
             PECongressionalAction.authorized_k,
             PECongressionalAction.rationale,
-        ).where(PECongressionalAction.pe_number.in_(pe_numbers))
-
-        if agencies:
-            stmt = stmt.where(PECongressionalAction.agency.in_(agencies))
+        )
+        if agencies and len(agencies) == len(pe_numbers):
+            stmt = stmt.where(
+                tuple_(
+                    PECongressionalAction.pe_number,
+                    PECongressionalAction.agency,
+                ).in_(list(zip(pe_numbers, agencies)))
+            )
+        else:
+            stmt = stmt.where(PECongressionalAction.pe_number.in_(pe_numbers))
+            if agencies:
+                stmt = stmt.where(PECongressionalAction.agency.in_(agencies))
 
         rows = self.session.execute(stmt).all()
         if not rows:

@@ -83,6 +83,7 @@ class TrendTracker:
                     ProgramElement.agency,
                     FundingLine.fiscal_year,
                     FundingLine.funding_type,
+                    FundingLine.pb_cycle,
                     func.sum(FundingLine.amount_thousands).label("total_funding")
                 )
                 .join(FundingLine, ProgramElement.id == FundingLine.program_element_id)
@@ -90,19 +91,26 @@ class TrendTracker:
                     FundingLine.fiscal_year.between(start_year, end_year),
                     FundingLine.funding_type.in_(PRIMARY_FUNDING_TYPES),
                 )
-                .group_by(ProgramElement.agency, FundingLine.fiscal_year, FundingLine.funding_type)
+                .group_by(
+                    ProgramElement.agency,
+                    FundingLine.fiscal_year,
+                    FundingLine.funding_type,
+                    FundingLine.pb_cycle,
+                )
             )
 
             results = self.session.execute(stmt).all()
             if not results: return pl.DataFrame()
 
             schema = {"agency": pl.Utf8, "fiscal_year": pl.Int64,
-                      "funding_type": pl.Utf8, "total_funding": pl.Float64}
+                      "funding_type": pl.Utf8, "pb_cycle": pl.Int64,
+                      "total_funding": pl.Float64}
             df_raw = pl.DataFrame(results, schema=schema, orient="row")
             df_raw = self._prefer_funding_type(df_raw, keys=["agency"])
 
             df_wide = df_raw.pivot(
-                index="agency", columns="fiscal_year", values="total_funding", aggregate_function="sum"
+                index="agency", on="fiscal_year", values="total_funding",
+                aggregate_function="sum",
             ).fill_null(0.0)
 
             return self._sort_and_format_trends(df_wide, start_year, end_year)
@@ -122,6 +130,7 @@ class TrendTracker:
             select(
                 FundingLine.fiscal_year,
                 FundingLine.funding_type,
+                FundingLine.pb_cycle,
                 FundingLine.amount_thousands,
             )
             .join(ProgramElement, ProgramElement.id == FundingLine.program_element_id)
@@ -138,6 +147,7 @@ class TrendTracker:
         df = pl.DataFrame(
             results,
             schema={"fiscal_year": pl.Int64, "funding_type": pl.Utf8,
+                    "pb_cycle": pl.Int64,
                     "amount_thousands": pl.Float64},
             orient="row",
         )
@@ -151,7 +161,7 @@ class TrendTracker:
         # within a basis before choosing the most reliable basis for the year;
         # choosing an arbitrary first row understates the program total.
         return (
-            df.group_by(["fiscal_year", "funding_type"])
+            df.group_by(["fiscal_year", "funding_type", "pb_cycle"])
             .agg(pl.col("amount_thousands").sum())
             .with_columns(
                 pl.col("funding_type")
@@ -179,6 +189,7 @@ class TrendTracker:
                     ProgramElement.agency,
                     FundingLine.fiscal_year,
                     FundingLine.funding_type,
+                    FundingLine.pb_cycle,
                     func.sum(FundingLine.amount_thousands).label("total_funding")
                 )
                 .join(FundingLine, ProgramElement.id == FundingLine.program_element_id)
@@ -186,7 +197,14 @@ class TrendTracker:
                     FundingLine.fiscal_year.between(start_year, end_year),
                     FundingLine.funding_type.in_(PRIMARY_FUNDING_TYPES),
                 )
-                .group_by(ProgramElement.pe_number, ProgramElement.program_name, ProgramElement.agency, FundingLine.fiscal_year, FundingLine.funding_type)
+                .group_by(
+                    ProgramElement.pe_number,
+                    ProgramElement.program_name,
+                    ProgramElement.agency,
+                    FundingLine.fiscal_year,
+                    FundingLine.funding_type,
+                    FundingLine.pb_cycle,
+                )
             )
 
             results = self.session.execute(stmt).all()
@@ -194,7 +212,8 @@ class TrendTracker:
 
             schema = {
                 "pe_number": pl.Utf8, "program_name": pl.Utf8, "agency": pl.Utf8,
-                "fiscal_year": pl.Int64, "funding_type": pl.Utf8, "total_funding": pl.Float64
+                "fiscal_year": pl.Int64, "funding_type": pl.Utf8,
+                "pb_cycle": pl.Int64, "total_funding": pl.Float64
             }
             df_raw = pl.DataFrame(results, schema=schema, orient="row")
             df_raw = self._prefer_funding_type(
@@ -203,7 +222,8 @@ class TrendTracker:
 
             df_wide = df_raw.pivot(
                 index=["pe_number", "program_name", "agency"],
-                columns="fiscal_year", values="total_funding", aggregate_function="sum"
+                on="fiscal_year", values="total_funding",
+                aggregate_function="sum",
             ).fill_null(0.0)
 
             return self._sort_and_format_trends(df_wide, start_year, end_year)

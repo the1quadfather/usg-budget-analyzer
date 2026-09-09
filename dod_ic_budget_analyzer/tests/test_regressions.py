@@ -1,12 +1,14 @@
 import sys
 import tempfile
 import unittest
+import gzip
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
 import pandas as pd
 import polars as pl
+import openpyxl
 from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session
 
@@ -15,13 +17,39 @@ sys.path.insert(0, str(APP_DIR))
 
 from analysis.ai_budget import LedgerUnavailable, SpendLedger, budget_guard
 from analysis.gap_analyzer import GapAnalyzer
+from analysis.deflators import apply_deflator, convert_amount
+from analysis.execution_view import ExecutionView
 from analysis.program_linker import ProgramLinker
+from analysis.provenance import csv_with_provenance, funding_sources
 from analysis.rhetoric_tracker import align_rhetoric_funding
 from analysis.spending_explorer import SpendingExplorer
 from analysis.trend_tracker import TrendTracker
 from analysis.user_identity import streamlit_user_id
-from storage.db import Base, FundingLine, ProgramElement, SourceDocument
+from acquisition.dd1416_downloader import metadata_from_url
+from parsing.dd1416_parser import DD1416ParseError, parse_workbook
+from storage.db import (
+    Base, FundingLine, PEExecution, ProgramElement, SourceDocument,
+)
 from storage.ingest_r1 import R1Ingestor
+from storage.build_archive import build_archive
+
+
+class ArchiveRegressionTests(unittest.TestCase):
+    def test_archive_round_trip_is_atomic_and_exact(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            processed = Path(tmp)
+            database = processed / "test.db"
+            archive = processed / "test.db.gz"
+            payload = (b"SQLite test payload\x00" * 10_000)
+            database.write_bytes(payload)
+            with patch("storage.build_archive.config.PROCESSED_DIR", processed):
+                raw_size, archive_size = build_archive(database, archive)
+
+            self.assertEqual(raw_size, len(payload))
+            self.assertLess(archive_size, raw_size)
+            with gzip.open(archive, "rb") as packaged:
+                self.assertEqual(packaged.read(), payload)
+            self.assertFalse((processed / "test.db.gz.tmp").exists())
 
 
 class FundingRegressionTests(unittest.TestCase):
@@ -80,6 +108,12 @@ class FundingRegressionTests(unittest.TestCase):
         self.assertEqual(funding.height, 1)
         self.assertEqual(funding.row(0, named=True)["amount_thousands"], 23_957)
 
+    def test_rdte_deflator_spot_check_and_conversion(self):
+        self.assertAlmostEqual(convert_amount(84.30, 2020), 100.0, places=6)
+        frame = pd.DataFrame({"fiscal_year": [2020, 2025], "amount": [84.3, 100.0]})
+        converted = apply_deflator(frame, amount_column="amount")
+        self.assertEqual([round(value, 6) for value in converted], [100.0, 100.0])
+
 
 class IngestionRegressionTests(unittest.TestCase):
     def test_ingest_is_idempotent_and_retains_mandatory_streams(self):
@@ -119,9 +153,234 @@ class IngestionRegressionTests(unittest.TestCase):
                     "PY Mandatory", "CY Mandatory", "BY Mandatory",
                 },
             )
+            rows = session.execute(select(FundingLine)).scalars().all()
+            self.assertTrue(all(row.pb_cycle == 2027 for row in rows))
+            self.assertTrue(all(row.source_document_id is not None for row in rows))
         finally:
             session.close()
             engine.dispose()
+
+
+class ProvenanceRegressionTests(unittest.TestCase):
+    def test_funding_export_names_its_source(self):
+        engine = create_engine("sqlite:///:memory:")
+        Base.metadata.create_all(engine)
+        with Session(engine) as session:
+            doc = SourceDocument(
+                filename="fy2027_r1.xlsx",
+                document_type="R1",
+                publication_year=2027,
+                source_url="https://example.test/fy2027_r1.xlsx",
+            )
+            pe = ProgramElement(
+                source_document=doc,
+                pe_number="0600001A",
+                program_name="Test Program",
+                agency="Army",
+            )
+            session.add(pe)
+            session.flush()
+            session.add(FundingLine(
+                program_element=pe,
+                source_document=doc,
+                pb_cycle=2027,
+                fiscal_year=2027,
+                funding_type="BY Request",
+                amount_thousands=123.0,
+            ))
+            session.commit()
+
+            sources = funding_sources(
+                session, pe_numbers=["0600001A"], agencies=["Army"]
+            )
+            exported = csv_with_provenance(
+                pd.DataFrame([{"FY": 2027, "$K": 123.0}]), sources
+            ).decode("utf-8-sig")
+
+        self.assertEqual(len(sources), 1)
+        self.assertIn("fy2027_r1.xlsx", exported)
+        self.assertIn("https://example.test/fy2027_r1.xlsx", exported)
+
+
+class DD1416RegressionTests(unittest.TestCase):
+    HEADERS = {
+        "line_number": "BLI#",
+        "pe_number": "BLI",
+        "program_title": "BLI TITLE",
+        "request": "President's Budget Request",
+        "enacted": (
+            "Enacted Appropriation (Includes Distribution of "
+            "Congressional Adjustments/1)"
+        ),
+        "statutory": "Adjustments Required by Statute /2",
+        "suppl": "Suppls/Collections/Rescissions/ Sequestration /3",
+        "other": "Other: Cancelled, Claims, Judgments /4",
+        "above": "Above Threshold Reprog",
+        "below": "Below Threshold Reprog",
+        "net": "Net",
+    }
+
+    def _workbook(self, path: Path, columns: dict[str, int], bad_net=False):
+        workbook = openpyxl.Workbook()
+        sheet = workbook.active
+        sheet.title = "ORG-BA-BLI"
+        sheet.cell(3, 1, "BA 01: BASIC RESEARCH")
+        for key, title in self.HEADERS.items():
+            sheet.cell(4, columns[key] + 1, title)
+        values = {
+            "line_number": "1",
+            "pe_number": "0601102A",
+            "program_title": "Defense Research Sciences",
+            "request": 310_191_000,
+            "enacted": 297_680_000,
+            "statutory": "-3,988,648",
+            "suppl": 0,
+            "other": -31_050,
+            "above": 0,
+            "below": -3_196_000,
+            "net": 1 if bad_net else 290_464_302,
+        }
+        sheet.cell(5, 1, "2025-2026")
+        for key, value in values.items():
+            sheet.cell(5, columns[key] + 1, value)
+        sheet.cell(6, 1, "TOTAL BA 01")
+        workbook.save(path)
+        workbook.close()
+
+    def test_component_column_offsets_map_to_same_semantics(self):
+        defense_columns = {
+            "line_number": 3, "pe_number": 4, "program_title": 5,
+            "request": 7, "enacted": 9, "statutory": 11,
+            "suppl": 13, "other": 15, "above": 17, "below": 19,
+            "net": 21,
+        }
+        army_columns = {
+            "line_number": 3, "pe_number": 4, "program_title": 7,
+            "request": 10, "enacted": 12, "statutory": 14,
+            "suppl": 16, "other": 19, "above": 23, "below": 27,
+            "net": 29,
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            defense = Path(tmp) / (
+                "Defense_Wide_RDTE_FY_2025_2026_DD_1416_Qtrly_Rpt_"
+                "03_31_2026.xlsx"
+            )
+            army = Path(tmp) / (
+                "Army_RDTE_FY_2025_2026_DD_1416_Qtrly_Rpt_03_31_2026.xlsx"
+            )
+            self._workbook(defense, defense_columns)
+            self._workbook(army, army_columns)
+            defense_row = parse_workbook(defense)[0]
+            army_row = parse_workbook(army)[0]
+
+        for field in (
+            "pe_number", "request_k", "enacted_k", "statutory_adj_k",
+            "below_threshold_reprog_k", "net_k",
+        ):
+            self.assertEqual(defense_row[field], army_row[field])
+        self.assertEqual(defense_row["net_k"], 290_464.302)
+
+    def test_legacy_filename_order_is_discovered(self):
+        item = metadata_from_url(
+            "Army_FY_2013_2014_DD_1416_RDTE_Qtrly_Rpt_9_30_2013.xlsx"
+        )
+        self.assertEqual(item["agency"], "Army")
+        self.assertEqual((item["fy_start"], item["fy_end"]), (2013, 2014))
+        self.assertEqual(item["report_date"], "2013-09-30")
+
+    def test_legacy_thousands_units_and_missing_line_number(self):
+        workbook = openpyxl.Workbook()
+        sheet = workbook.active
+        sheet.cell(2, 1, "(Dollars in Thousands)")
+        sheet.cell(3, 1, "BA 01: BASIC RESEARCH")
+        legacy_headers = [
+            "Period of Availability", "BLI", "BLI TITLE",
+            "President's Budget Request", "Enacted Appropriation",
+            "Adjustments Required by Statute /6", "Suppls/Rescissions",
+            "Cancelled Account Adjustments", "Above Threshold Reprog",
+            "Below Threshold Reprog", "Net",
+        ]
+        for column, title in enumerate(legacy_headers, start=1):
+            sheet.cell(4, column, title)
+        for column, value in enumerate([
+            "2012-2013", "0601102F", "Defense Research Sciences", 364328,
+            364328, -7847, 0, 0, 0, -8648, 347833,
+        ], start=1):
+            sheet.cell(5, column, value)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / (
+                "Air_Force_FY_2012_2013_DD_1416_RDTE_Qtrly_Rpt_"
+                "12_31_2012.xlsx"
+            )
+            workbook.save(path)
+            workbook.close()
+            row = parse_workbook(path)[0]
+        self.assertIsNone(row["line_number"])
+        self.assertEqual(row["enacted_k"], 364328.0)
+        self.assertEqual(row["net_k"], 347833.0)
+
+    def test_reconciliation_failure_is_rejected(self):
+        columns = {
+            "line_number": 3, "pe_number": 4, "program_title": 5,
+            "request": 7, "enacted": 9, "statutory": 11,
+            "suppl": 13, "other": 15, "above": 17, "below": 19,
+            "net": 21,
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / (
+                "Army_RDTE_FY_2025_2026_DD_1416_Qtrly_Rpt_03_31_2026.xlsx"
+            )
+            self._workbook(path, columns, bad_net=True)
+            with self.assertRaises(DD1416ParseError):
+                parse_workbook(path)
+
+    def test_execution_view_keeps_latest_quarter(self):
+        engine = create_engine("sqlite:///:memory:")
+        Base.metadata.create_all(engine)
+        with Session(engine) as session:
+            for report_date, net in (("2025-12-31", 90.0), ("2026-03-31", 95.0)):
+                session.add(PEExecution(
+                    pe_number="0601102A", agency="Army", appropriation="RDTE",
+                    fy_start=2025, fy_end=2026, report_date=report_date,
+                    program_title="Defense Research Sciences",
+                    request_k=100.0, enacted_k=100.0, statutory_adj_k=0.0,
+                    suppl_resc_seq_k=0.0, other_adj_k=0.0,
+                    above_threshold_reprog_k=0.0,
+                    below_threshold_reprog_k=net - 100.0, net_k=net,
+                    source_file=f"{report_date}.xlsx",
+                    content_hash=f"hash-{report_date}",
+                ))
+            session.commit()
+            result = ExecutionView(session).latest_program_series(
+                ["0601102A"], ["Army"]
+            )
+        self.assertEqual(result.height, 1)
+        self.assertEqual(result.row(0, named=True)["net_k"], 95.0)
+
+    def test_execution_view_filters_exact_pe_component_pairs(self):
+        engine = create_engine("sqlite:///:memory:")
+        Base.metadata.create_all(engine)
+        with Session(engine) as session:
+            for pe_number, agency, net in (
+                ("0600001A", "Army", 10.0),
+                ("0600002N", "Navy", 20.0),
+                ("0600001A", "Navy", 1_000.0),
+            ):
+                session.add(PEExecution(
+                    pe_number=pe_number, agency=agency, appropriation="RDTE",
+                    fy_start=2025, fy_end=2026, report_date="2026-03-31",
+                    program_title="Test", request_k=net, enacted_k=net,
+                    statutory_adj_k=0.0, suppl_resc_seq_k=0.0,
+                    other_adj_k=0.0, above_threshold_reprog_k=0.0,
+                    below_threshold_reprog_k=0.0, net_k=net,
+                    source_file=f"{pe_number}-{agency}.xlsx",
+                    content_hash=f"{pe_number}-{agency}",
+                ))
+            session.commit()
+            result = ExecutionView(session).latest_program_series(
+                ["0600001A", "0600002N"], ["Army", "Navy"]
+            )
+        self.assertEqual(result.row(0, named=True)["net_k"], 30.0)
 
 
 class MatchingRegressionTests(unittest.TestCase):

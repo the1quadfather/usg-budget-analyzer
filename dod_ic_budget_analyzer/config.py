@@ -25,8 +25,12 @@ COMPTROLLER_DIR = RAW_DIR / "comptroller"
 USASPENDING_DIR = RAW_DIR / "usaspending"
 GAO_DIR = RAW_DIR / "gao"
 CONGRESS_DIR = RAW_DIR / "congress"
+DD1416_DIR = COMPTROLLER_DIR / "execution" / "dd1416"
 
-for d in [COMPTROLLER_DIR, USASPENDING_DIR, GAO_DIR, CONGRESS_DIR, PROCESSED_DIR]:
+for d in [
+    COMPTROLLER_DIR, USASPENDING_DIR, GAO_DIR, CONGRESS_DIR,
+    DD1416_DIR, PROCESSED_DIR,
+]:
     d.mkdir(parents=True, exist_ok=True)
 
 # ── DoD Comptroller ───────────────────────────────────────────────────────────
@@ -35,6 +39,9 @@ for d in [COMPTROLLER_DIR, USASPENDING_DIR, GAO_DIR, CONGRESS_DIR, PROCESSED_DIR
 COMPTROLLER_BASE_URL = "https://comptroller.war.gov"
 COMPTROLLER_LEGACY_BASE_URL = "https://comptroller.defense.gov"
 COMPTROLLER_BUDGET_URL = "https://comptroller.war.gov/budgetmaterials/budget{year}.aspx"
+DD1416_INDEX_URL = (
+    "https://comptroller.war.gov/BudgetExecution/1416QrtlyRptsfy{year}.aspx"
+)
 
 # Official machine-readable exhibit spreadsheets (verified FY2012–FY2027 for R-1)
 COMPTROLLER_XLSX_URL = (

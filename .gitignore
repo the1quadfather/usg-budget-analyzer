@@ -15,6 +15,7 @@ dod_ic_budget_analyzer/logs/
 # Secrets & local config
 .env
 .env.*
+.streamlit/secrets.toml
 
 # Tooling
 .claude/

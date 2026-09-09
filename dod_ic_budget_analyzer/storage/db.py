@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional
 
-from sqlalchemy import Float, ForeignKey, Integer, String, Text, create_engine
+from sqlalchemy import Float, ForeignKey, Integer, String, Text, create_engine, inspect, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import (
     DeclarativeBase,
@@ -48,10 +48,16 @@ class SourceDocument(Base):
     filename: Mapped[str] = mapped_column(String(255), unique=True, index=True)
     document_type: Mapped[str] = mapped_column(String(50))
     publication_year: Mapped[int] = mapped_column(Integer, index=True)
+    source_url: Mapped[Optional[str]] = mapped_column(String(2048))
+    retrieved_at: Mapped[Optional[datetime]]
+    content_hash: Mapped[Optional[str]] = mapped_column(String(64), index=True)
     processed_date: Mapped[datetime] = mapped_column(default=_utcnow)
 
     program_elements: Mapped[List["ProgramElement"]] = relationship(
         back_populates="source_document", cascade="all, delete-orphan"
+    )
+    funding_lines: Mapped[List["FundingLine"]] = relationship(
+        back_populates="source_document"
     )
 
 
@@ -84,11 +90,54 @@ class FundingLine(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     program_element_id: Mapped[int] = mapped_column(ForeignKey("program_elements.id"))
+    # Funding lines are versioned observations. A fiscal year can appear in
+    # three different President's Budget submissions, so provenance belongs
+    # on the observation rather than only on the canonical PE record.
+    source_document_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("source_documents.id"), index=True
+    )
+    pb_cycle: Mapped[Optional[int]] = mapped_column(Integer, index=True)
     fiscal_year: Mapped[int] = mapped_column(Integer, index=True)
     funding_type: Mapped[str] = mapped_column(String(50))  # e.g., 'PY Actual', 'CY Request'
     amount_thousands: Mapped[float] = mapped_column(Float)
 
     program_element: Mapped["ProgramElement"] = relationship(back_populates="funding_lines")
+    source_document: Mapped[Optional["SourceDocument"]] = relationship(
+        back_populates="funding_lines"
+    )
+
+
+class PEExecution(Base):
+    """Quarterly DD 1416 budget-authority status for one RDT&E PE line."""
+
+    __tablename__ = "pe_execution"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    source_document_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("source_documents.id"), index=True
+    )
+    pe_number: Mapped[str] = mapped_column(String(50), index=True)
+    agency: Mapped[str] = mapped_column(String(100), index=True)
+    appropriation: Mapped[str] = mapped_column(String(50), index=True)
+    fy_start: Mapped[int] = mapped_column(Integer, index=True)
+    fy_end: Mapped[int] = mapped_column(Integer)
+    report_date: Mapped[str] = mapped_column(String(10), index=True)
+    line_number: Mapped[Optional[str]] = mapped_column(String(50))
+    program_title: Mapped[str] = mapped_column(String(500))
+    budget_activity: Mapped[Optional[int]] = mapped_column(Integer)
+    request_k: Mapped[Optional[float]] = mapped_column(Float)
+    enacted_k: Mapped[Optional[float]] = mapped_column(Float)
+    statutory_adj_k: Mapped[Optional[float]] = mapped_column(Float)
+    suppl_resc_seq_k: Mapped[Optional[float]] = mapped_column(Float)
+    other_adj_k: Mapped[Optional[float]] = mapped_column(Float)
+    above_threshold_reprog_k: Mapped[Optional[float]] = mapped_column(Float)
+    below_threshold_reprog_k: Mapped[Optional[float]] = mapped_column(Float)
+    net_k: Mapped[Optional[float]] = mapped_column(Float)
+    source_file: Mapped[str] = mapped_column(String(255))
+    content_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    ingested_at: Mapped[datetime] = mapped_column(default=_utcnow)
+
+    source_document: Mapped[Optional["SourceDocument"]] = relationship()
 
 
 class PENarrative(Base):
@@ -257,8 +306,8 @@ def ensure_sqlite_file(db_uri: str) -> None:
     older than the archive.
 
     The database is the product -- the app is useful the moment you clone --
-    but it outgrew GitHub's 100 MB per-file limit. It is ~63 MB of English
-    prose, so it stores at roughly a quarter of that and ships as
+    but it outgrew GitHub's 100 MB per-file limit. It is highly compressible,
+    so it stores at roughly a quarter of its raw size and ships as
     `usg_budgets.db.gz`, expanded here on first use.
 
     Decompression writes a temporary file in the same directory and then
@@ -306,7 +355,60 @@ def get_engine(db_uri: str) -> Engine:
     # Every entry point -- app, scrapers, evals -- opens the database through
     # here, so this is the one place the archive needs expanding.
     ensure_sqlite_file(db_uri)
-    return create_engine(db_uri, echo=False)
+    engine = create_engine(db_uri, echo=False)
+    _ensure_schema_compatibility(engine)
+    return engine
+
+
+def _ensure_schema_compatibility(engine: Engine) -> None:
+    """Apply small, additive migrations needed by older shipped databases.
+
+    SQLite's ``create_all`` creates new tables but does not add columns to an
+    existing table. These migrations are intentionally additive; the
+    provenance rebuild command populates the new funding-line fields from the
+    tracked parquet corpus.
+    """
+    Base.metadata.create_all(engine)
+    if engine.dialect.name != "sqlite":
+        return
+
+    schema = inspect(engine)
+    source_columns = {c["name"] for c in schema.get_columns("source_documents")}
+    funding_columns = {c["name"] for c in schema.get_columns("funding_lines")}
+
+    source_additions = {
+        "source_url": "VARCHAR(2048)",
+        "retrieved_at": "DATETIME",
+        "content_hash": "VARCHAR(64)",
+    }
+    funding_additions = {
+        "source_document_id": "INTEGER REFERENCES source_documents(id)",
+        "pb_cycle": "INTEGER",
+    }
+
+    with engine.begin() as connection:
+        for name, sql_type in source_additions.items():
+            if name not in source_columns:
+                connection.execute(text(
+                    f"ALTER TABLE source_documents ADD COLUMN {name} {sql_type}"
+                ))
+        for name, sql_type in funding_additions.items():
+            if name not in funding_columns:
+                connection.execute(text(
+                    f"ALTER TABLE funding_lines ADD COLUMN {name} {sql_type}"
+                ))
+        connection.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_source_documents_content_hash "
+            "ON source_documents (content_hash)"
+        ))
+        connection.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_funding_lines_source_document_id "
+            "ON funding_lines (source_document_id)"
+        ))
+        connection.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_funding_lines_pb_cycle "
+            "ON funding_lines (pb_cycle)"
+        ))
 
 
 def init_db(engine: Engine) -> None:

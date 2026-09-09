@@ -12,6 +12,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 from tqdm import tqdm
 
+import config
 from storage.db import SourceDocument, ProgramElement, FundingLine
 
 logger = logging.getLogger(__name__)
@@ -62,7 +63,17 @@ class R1Ingestor:
                 doc = SourceDocument(
                     filename=filename,
                     document_type="R1",
-                    publication_year=row["fiscal_year"]
+                    publication_year=row["fiscal_year"],
+                    source_url=(
+                        config.COMPTROLLER_XLSX_URL.format(
+                            year=row["fiscal_year"],
+                            stem=config.XLSX_EXHIBIT_STEMS["rdtee"],
+                        )
+                        if row.get("extraction_method") == "xlsx"
+                        else config.COMPTROLLER_BUDGET_URL.format(
+                            year=row["fiscal_year"]
+                        )
+                    ),
                 )
                 self.session.add(doc)
                 self.session.flush() # Flush to get the generated ID
@@ -119,6 +130,8 @@ class R1Ingestor:
                     funding_lines.append(
                         FundingLine(
                             program_element_id=pe_id,
+                            source_document_id=doc_id,
+                            pb_cycle=pub_year,
                             fiscal_year=fy,
                             funding_type=f_type,
                             amount_thousands=float(amt)

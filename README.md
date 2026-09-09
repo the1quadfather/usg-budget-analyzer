@@ -13,9 +13,9 @@ context. Everything runs locally against a SQLite database.
 
 | Tab | Question it answers |
 |---|---|
-| **Budget Trends** | How has RDT&E funding moved by component, FY1998–FY2027? Who got paid from each appropriation account? |
-| **Program Finder** | Which budget program is this name / news quote / PE number? Then a full profile: funding history, official plans & reported work, contract awards, recent coverage |
-| **Rhetoric vs. Budget** | Did the money follow the talk? What was requested vs. what the authorizing committees actually authorized, with the reason they printed — an exact join, no API key. Optionally overlaid with AI-characterized public emphasis and a lead-aware alignment coefficient |
+| **Budget Trends** | How has RDT&E funding moved by component, FY1996–FY2027, in then-year or constant FY2025 dollars? Who got paid from each appropriation account? |
+| **Program Finder** | Which budget program is this name / news quote / PE number? Then a full profile: vintage-labeled funding, request-to-net execution, official plans, awards, and recent coverage |
+| **Rhetoric vs. Budget** | Did the money follow the talk? Follow request → separate House/Senate authorization → enacted appropriation → reprogramming → net current program, with optional AI-characterized public emphasis |
 | **Data Coverage** | What's ingested, what's live-queried, and the known blind spots |
 
 Program matching is multi-stage: exact PE-number lookup, lexical matching
@@ -28,7 +28,7 @@ programs share a name (joint programs usually do).
 ```mermaid
 flowchart LR
     subgraph Sources
-        A[comptroller.war.gov<br/>R-1 XLSX + R-2 XML]
+        A[comptroller.war.gov<br/>R-1/R-2 + DD 1416 XLSX]
         B[USAspending.gov API]
         C[Gemini + web search<br/>optional]
     end
@@ -65,12 +65,14 @@ the requirements see torch as already satisfied. (The Dockerfile does this for
 you.)
 
 The repository ships with the processed database, so the app is useful
-immediately: FY1998–FY2027 R-1 funding, R-2 mission narratives for 1,383 of
+immediately: FY1996–FY2027 R-1 funding, R-2 mission narratives for 1,383 of
 2,055 program elements across all five components, and 26,544 congressional
 authorization actions from 30 NDAA committee reports covering FY2012–FY2027 in
-both chambers.
+both chambers. It also includes 79,677 reconciled DD 1416 execution rows from
+381 official workbooks (reports dated December 2012 through March 2026).
 
-The database ships **compressed** as `usg_budgets.db.gz` (27 MB) because 124 MB
+The database ships **compressed** as `usg_budgets.db.gz` (about 41 MB) because
+the roughly 166 MB
 raw is past GitHub's per-file limit. It expands itself the first time anything
 opens it — no setup step — and the expanded file is gitignored. The first
 Program Finder search downloads the sentence-transformer model (one time,
@@ -83,8 +85,13 @@ optional open-source-emphasis layer on the Rhetoric vs. Budget tab. The
 congressional requested-vs-authorized figures on that tab need **no key** and
 cost nothing per user:
 
-```bash
-setx GEMINI_API_KEY "your-key"     # Windows; export on Linux/macOS
+For a one-off local demo, inject the key into the current process rather than
+persisting it with `setx`, and bind Streamlit to loopback:
+
+```powershell
+$env:GEMINI_API_KEY = Read-Host "Gemini API key" -MaskInput
+python -m streamlit run app.py --server.address 127.0.0.1
+Remove-Item Env:GEMINI_API_KEY
 ```
 
 **Keys are per-user and never live in this repository.** The app reads
@@ -154,14 +161,33 @@ specific to the hosted app:
   makes transformers' lazy vision modules try to import torchvision and logs
   ~150 harmless tracebacks per scan.
 - **Leave `GEMINI_API_KEY` out of a public deployment.** Every AI button would
-  bill the deployer's key, and anonymous visitors all share one identity, so
-  web-grounded results could not be kept per-user as the Gemini terms require.
-  The app degrades cleanly: the AI panels show a one-line note and everything
-  else works. For a private showing, add the key under the app's Settings →
-  Secrets and **Reboot** the app — the key is read once at startup.
+  bill the deployer's key. Anonymous sessions are isolated from one another,
+  but a public visitor can still spend a fresh per-session allowance. The app
+  degrades cleanly without a key. For a private showing, restrict the app to
+  named viewers (or add an OIDC allowlist), add the key under Settings →
+  Secrets, and **Reboot** the app. `.streamlit/secrets.toml` is gitignored.
 
 Community Cloud apps get roughly 1 GB of RAM; this one settles around 550–600 MB
 once the matching model has loaded.
+
+For an application-level allowlist, configure Streamlit OIDC in the app's
+Secrets and add the permitted addresses. The gate executes before the database
+or any AI controls initialize:
+
+```toml
+demo_allowed_emails = ["you@example.com", "attendee@example.com"]
+
+[auth]
+redirect_uri = "https://YOUR-APP.streamlit.app/oauth2callback"
+cookie_secret = "GENERATE-A-LONG-RANDOM-VALUE"
+client_id = "YOUR-OIDC-CLIENT-ID"
+client_secret = "YOUR-OIDC-CLIENT-SECRET"
+server_metadata_url = "https://accounts.google.com/.well-known/openid-configuration"
+```
+
+With local OIDC settings present, the same allowlist can be supplied as the
+comma-separated environment variable `DEMO_ALLOWED_EMAILS`. If no allowlist is
+configured, the app retains its normal public/degraded behavior.
 
 ## Quickstart (Docker)
 
@@ -212,7 +238,7 @@ data — the raw `.db` is gitignored and only the `.gz` is published:
 
 ```bash
 python -m analysis.ai_budget --reset-runtime          # never ship AI runtime rows
-gzip -9 -c data/processed/usg_budgets.db > data/processed/usg_budgets.db.gz
+python -m storage.build_archive                       # atomic gzip rebuild
 ```
 
 Service-branch R-2 narratives (Army, Navy, Air Force, Space Force) come from
@@ -222,6 +248,12 @@ their PDF justification books:
 python acquisition/service_r2_downloader.py --service army navy --years 2028 --ingest
 ```
 
+Quarterly execution updates are machine-readable and key-free:
+
+```bash
+python -m storage.ingest_dd1416 --years 2028 --download
+```
+
 `data/raw/` is not tracked (re-downloadable PDFs/XLSX/XML); the pipeline above
 rebuilds it. Pre-FY2012 years came from parsed PDFs and are already in the
 shipped database.
@@ -229,8 +261,16 @@ shipped database.
 ## Data sources & honesty notes
 
 - **R-1 exhibits** (comptroller.war.gov): official XLSX for FY2012–FY2027,
-  parsed PDFs for FY1998–FY2011. Discretionary and reconciliation/mandatory
-  funds are kept as separate streams.
+  parsed PDFs for earlier PB cycles. Each observation records its source PB
+  submission; discretionary and reconciliation/mandatory funds remain
+  separate. Trend views can use the RDT&E-specific Green Book deflator.
+- **DD 1416 quarterly execution reports** (comptroller.war.gov): official XLSX
+  rows keyed by program element, including President's request, enacted
+  appropriation, statutory changes, above- and below-threshold reprogramming,
+  and net current program. These are budget-authority status reports, not
+  obligations or outlays. The corpus contains every downloadable RDT&E workbook
+  discovered on the FY2013–FY2026 index pages; eight FY2021 links published with
+  a nonexistent `6_31` directory return 404 and are therefore disclosed gaps.
 - **R-2 justification books**: Defense-Wide via official DTIC-schema XML
   (PB2026 cycle onward); Army and Navy via the PDF books those departments
   publish; Air Force and Space Force via the Internet Archive, because their
@@ -272,8 +312,8 @@ shipped database.
 
 ```
 dod_ic_budget_analyzer/
-├── acquisition/     # downloaders: comptroller XLSX/PDF, R-2 XML, USAspending
-├── parsing/         # R-1 XLSX/PDF parsers, R-2 jbook XML parser
+├── acquisition/     # downloaders: R-1/R-2, DD 1416, USAspending
+├── parsing/         # R-1/R-2 and DD 1416 parsers
 ├── storage/         # SQLAlchemy schema + ingest pipelines
 ├── matching/        # normalizer, fuzzy matcher, semantic matcher
 ├── analysis/        # trends, program linker, awards, rhetoric alignment, eval
@@ -282,10 +322,9 @@ dod_ic_budget_analyzer/
 └── app.py           # Streamlit UI
 ```
 
-## Roadmap
+## Near-term roadmap
 
-- Service R-2 narratives (Army/Navy/AF publish PDF-only — needs extraction)
-- Re-base FY2012–FY2026 funding on official XLSX end to end
-- Enacted-vs-request deltas from appropriations Joint Explanatory Statements
-- IC topline (NIP/MIP) tracking
-- UI polish pass
+- Reconcile R-1 and DD 1416 totals against published appropriation toplines
+- Add procurement P-1 ingestion and evidence-backed RDT&E transition leads
+- Track PE renumbering, splits, merges, and transfers across budget cycles
+- Publish versioned bulk-data releases and a PE-level change feed

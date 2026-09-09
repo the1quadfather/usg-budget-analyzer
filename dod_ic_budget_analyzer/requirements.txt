@@ -22,4 +22,5 @@ torch
 matplotlib
 seaborn
 xlsxwriter
-streamlit
+streamlit>=1.42.0
+Authlib>=1.3.2

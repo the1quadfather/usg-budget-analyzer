@@ -3,7 +3,7 @@ app.py
 
 Streamlit interface for the DoD Budget Explorer.
 
-Information architecture: three tabs organized around analyst questions,
+Information architecture: four tabs organized around analyst questions,
 not data sources.
   Budget Trends    - topline RDT&E by component, plus account-level
                      "who got paid" drill-down
@@ -16,6 +16,7 @@ external, slow-or-billable calls (USAspending.gov, AI) sit behind buttons
 labeled with their source.
 """
 
+import os
 from pathlib import Path
 
 import altair as alt
@@ -27,12 +28,91 @@ import config as config_module
 from storage.db import get_engine, get_session_factory
 from matching.fuzzy_matcher import ProgramMatcher
 from analysis.program_linker import ProgramLinker
+from analysis.provenance import (
+    csv_with_provenance,
+    execution_sources,
+    funding_sources,
+    source_summary,
+    xlsx_with_provenance,
+)
 from analysis.trend_tracker import TrendTracker
 from analysis.text_render import escape_dollars
 from analysis.user_identity import streamlit_user_id
 
 # --- Configuration & State Setup ---
 st.set_page_config(page_title="DoD Budget Explorer", layout="wide")
+
+
+def _demo_allowed_emails() -> set[str]:
+    """Optional deployment allowlist from environment or Streamlit Secrets."""
+    raw = os.getenv("DEMO_ALLOWED_EMAILS", "")
+    values: list[str] = raw.split(",") if raw else []
+    try:
+        secret_values = st.secrets.get("demo_allowed_emails", [])
+        if isinstance(secret_values, str):
+            values.extend(secret_values.split(","))
+        else:
+            values.extend(secret_values)
+    except Exception:
+        pass
+    return {value.strip().lower() for value in values if value.strip()}
+
+
+_allowed_emails = _demo_allowed_emails()
+if _allowed_emails:
+    if not getattr(st.user, "is_logged_in", False):
+        st.title("Private demo")
+        st.info("Sign in with an approved email address to continue.")
+        if st.button("Sign in"):
+            st.login()
+        st.stop()
+    viewer_email = str(getattr(st.user, "email", "")).strip().lower()
+    if viewer_email not in _allowed_emails:
+        st.error("This account is not authorized for the demo.")
+        if st.button("Sign out"):
+            st.logout()
+        st.stop()
+
+
+def _query_int(name: str, default: int, minimum: int, maximum: int) -> int:
+    """Read a bounded integer from the URL without trusting its contents."""
+    try:
+        return max(minimum, min(maximum, int(st.query_params.get(name, default))))
+    except (TypeError, ValueError):
+        return default
+
+
+def _sync_trend_url() -> None:
+    st.query_params.update(
+        tab="trends",
+        start=st.session_state["trend_start"],
+        end=st.session_state["trend_end"],
+    )
+
+
+def _sync_finder_url() -> None:
+    st.query_params["tab"] = "finder"
+
+
+def _sync_rhetoric_url() -> None:
+    st.query_params["tab"] = "rhetoric"
+    if "rhetoric_query" in st.session_state:
+        st.query_params["rq"] = st.session_state["rhetoric_query"]
+    if "rhet_years" in st.session_state:
+        start, end = st.session_state["rhet_years"]
+        st.query_params.update(rstart=start, rend=end)
+
+
+def _sync_profile_view(view: str) -> None:
+    st.query_params.update(tab="finder", view=view)
+
+
+def _sync_dollar_url() -> None:
+    st.query_params["dollars"] = (
+        "constant-2025"
+        if st.session_state["dollar_basis"] == "Constant FY2025"
+        else "then-year"
+    )
 
 # Anchor the DB path to this file so the app works from any working directory
 DB_PATH = f"sqlite:///{(Path(__file__).parent / 'data' / 'processed' / 'usg_budgets.db').as_posix()}"
@@ -195,6 +275,12 @@ def fetch_coverage_stats() -> dict:
             "narrative_pes": "SELECT COUNT(DISTINCT pe_number) FROM pe_narratives",
             "narratives": "SELECT COUNT(*) FROM pe_narratives",
             "accomplishments": "SELECT COUNT(*) FROM pe_accomplishments",
+            "execution_rows": "SELECT COUNT(*) FROM pe_execution",
+            "execution_fy_min": "SELECT MIN(fy_start) FROM pe_execution",
+            "execution_fy_max": "SELECT MAX(fy_start) FROM pe_execution",
+            "execution_files": (
+                "SELECT COUNT(DISTINCT source_document_id) FROM pe_execution"
+            ),
         }.items():
             try:
                 stats[key] = c.execute(text(q)).scalar() or 0
@@ -217,6 +303,82 @@ def fetch_coverage_stats() -> dict:
         except Exception:
             stats["narrative_by_agency"] = {}
     return stats
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def fetch_funding_sources(
+    pe_numbers: tuple[str, ...] = (),
+    agencies: tuple[str, ...] = (),
+    fiscal_years: tuple[int, int] | None = None,
+) -> list[dict]:
+    SessionFactory = init_db_connection()
+    with SessionFactory() as session:
+        return funding_sources(
+            session,
+            pe_numbers=pe_numbers or None,
+            agencies=agencies or None,
+            fiscal_years=fiscal_years,
+        )
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def fetch_execution_data(
+    pe_numbers: tuple[str, ...], agencies: tuple[str, ...]
+) -> tuple[pd.DataFrame, list[dict]]:
+    from analysis.execution_view import ExecutionView
+    SessionFactory = init_db_connection()
+    with SessionFactory() as session:
+        frame = ExecutionView(session).latest_program_series(
+            list(pe_numbers), list(agencies)
+        )
+        sources = execution_sources(
+            session, pe_numbers=pe_numbers, agencies=agencies
+        )
+    return (
+        frame.to_pandas() if not frame.is_empty() else pd.DataFrame(),
+        sources,
+    )
+
+
+def render_provenance(sources: list[dict]) -> None:
+    st.caption(source_summary(sources))
+    links = [
+        f"[{source['filename']}]({source['source_url']})"
+        for source in sources
+        if source.get("source_url")
+    ]
+    if links:
+        with st.expander("Source documents"):
+            st.markdown("  \n".join(links))
+
+
+def render_table_downloads(
+    data: pd.DataFrame,
+    *,
+    name: str,
+    key: str,
+    sources: list[dict],
+) -> None:
+    """Offer both portable and analyst-friendly exports with provenance."""
+    safe_name = name.replace(" ", "_").lower()
+    csv_col, xlsx_col, _ = st.columns([1, 1, 4])
+    csv_col.download_button(
+        "Download CSV",
+        csv_with_provenance(data, sources),
+        file_name=f"{safe_name}.csv",
+        mime="text/csv",
+        key=f"csv::{key}",
+    )
+    xlsx_col.download_button(
+        "Download XLSX",
+        xlsx_with_provenance(data, sources),
+        file_name=f"{safe_name}.xlsx",
+        mime=(
+            "application/vnd.openxmlformats-officedocument."
+            "spreadsheetml.sheet"
+        ),
+        key=f"xlsx::{key}",
+    )
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def congressional_year_bounds() -> tuple[int, int]:
@@ -263,25 +425,150 @@ def money_bar(df: pd.DataFrame, name_col: str) -> alt.Chart:
         .properties(height=max(30 * len(d) + 30, 120))
     )
 
+
+def execution_waterfall(row: pd.Series) -> alt.Chart:
+    """Request → enacted → adjustments → net, with oversight types distinct."""
+    request = float(row["request_k"] or 0) / 1e3
+    enacted = float(row["enacted_k"] or 0) / 1e3
+    steps = [
+        ("Request", request, "Request / net"),
+        ("Enacted change", enacted - request, "Congressional change"),
+        ("Statutory", float(row["statutory_adj_k"] or 0) / 1e3,
+         "Other adjustment"),
+        ("Suppl./rescission", float(row["suppl_resc_seq_k"] or 0) / 1e3,
+         "Other adjustment"),
+        ("Other", float(row["other_adj_k"] or 0) / 1e3,
+         "Other adjustment"),
+        ("Above-threshold", float(row["above_threshold_reprog_k"] or 0) / 1e3,
+         "Prior-approval reprogramming"),
+        ("Below-threshold", float(row["below_threshold_reprog_k"] or 0) / 1e3,
+         "Below-threshold reprogramming"),
+    ]
+    records = []
+    running = 0.0
+    for index, (label, change, kind) in enumerate(steps):
+        start = running
+        end = change if index == 0 else running + change
+        records.append({
+            "step": label,
+            "order": index,
+            "start": min(start, end),
+            "end": max(start, end),
+            "change": change,
+            "kind": kind,
+        })
+        running = end
+    net = float(row["net_k"] or 0) / 1e3
+    records.append({
+        "step": "Net current program", "order": len(records),
+        "start": 0.0, "end": net, "change": net,
+        "kind": "Request / net",
+    })
+    frame = pd.DataFrame(records)
+    order = frame["step"].tolist()
+    return (
+        alt.Chart(frame)
+        .mark_bar(cornerRadius=2)
+        .encode(
+            x=alt.X("step:N", sort=order, title=None,
+                    axis=alt.Axis(labelAngle=-30)),
+            y=alt.Y("start:Q", title="$ Millions of budget authority"),
+            y2="end:Q",
+            color=alt.Color(
+                "kind:N",
+                scale=alt.Scale(
+                    domain=[
+                        "Request / net", "Congressional change",
+                        "Other adjustment", "Prior-approval reprogramming",
+                        "Below-threshold reprogramming",
+                    ],
+                    range=["#2a78d6", "#1baf7a", "#898781", "#e34948", "#eda100"],
+                ),
+                title=None,
+            ),
+            tooltip=[
+                alt.Tooltip("step:N", title="Step"),
+                alt.Tooltip("change:Q", format="+,.1f", title="$M change/total"),
+            ],
+        )
+        .properties(height=300)
+    )
+
+
 EXECUTION_FYS = list(range(2018, 2027))
 
 SessionFactory = init_db_connection()
 
 # --- UI Layout ---
 st.title("🇺🇸 DoD Budget Explorer")
-
-tab_trends, tab_finder, tab_rhetoric, tab_coverage = st.tabs(
-    ["Budget Trends", "Program Finder", "Rhetoric vs. Budget", "Data Coverage"]
+dollar_basis = st.radio(
+    "R-1 funding dollar basis",
+    ["Then-year", "Constant FY2025"],
+    index=(
+        1 if st.query_params.get("dollars") == "constant-2025" else 0
+    ),
+    horizontal=True,
+    key="dollar_basis",
+    on_change=_sync_dollar_url,
+    help=(
+        "Constant dollars use the RDT&E-specific DoD Green Book TOA "
+        "deflator—not CPI or the GDP deflator."
+    ),
 )
+constant_dollars = dollar_basis == "Constant FY2025"
+
+
+def include_deflator_source(sources: list[dict]) -> list[dict]:
+    if not constant_dollars:
+        return sources
+    from analysis.deflators import provenance_record
+    return [*sources, provenance_record()]
+
+tab_definitions = [
+    ("trends", "Budget Trends"),
+    ("finder", "Program Finder"),
+    ("rhetoric", "Rhetoric vs. Budget"),
+    ("coverage", "Data Coverage"),
+]
+requested_tab = st.query_params.get("tab", "trends")
+if requested_tab not in {key for key, _ in tab_definitions}:
+    requested_tab = "trends"
+# Streamlit tabs cannot be selected programmatically. Putting the requested
+# view first makes a shared URL open on the intended content without brittle
+# browser-side JavaScript; callbacks below keep the URL current as users work.
+ordered_tabs = sorted(
+    tab_definitions, key=lambda item: item[0] != requested_tab
+)
+tab_containers = st.tabs([label for _, label in ordered_tabs])
+tabs_by_key = {
+    key: container
+    for (key, _), container in zip(ordered_tabs, tab_containers)
+}
+tab_trends = tabs_by_key["trends"]
+tab_finder = tabs_by_key["finder"]
+tab_rhetoric = tabs_by_key["rhetoric"]
+tab_coverage = tabs_by_key["coverage"]
 
 # ═══════════════════════════════ Budget Trends ═══════════════════════════════
 with tab_trends:
     st.header("RDT&E topline by component")
+    trend_start_default = _query_int("start", 2010, 1996, 2026)
+    trend_end_default = _query_int("end", 2027, 1997, 2027)
+    if trend_start_default >= trend_end_default:
+        trend_start_default, trend_end_default = 2010, 2027
     col1, col2 = st.columns(2)
-    start_yr = col1.slider("Start Year", 1998, 2026, 2010)
-    end_yr = col2.slider("End Year", 1999, 2027, 2027)
+    start_yr = col1.slider(
+        "Start Year", 1996, 2026, trend_start_default,
+        key="trend_start", on_change=_sync_trend_url,
+    )
+    end_yr = col2.slider(
+        "End Year", 1997, 2027, trend_end_default,
+        key="trend_end", on_change=_sync_trend_url,
+    )
 
     df_trends = fetch_agency_trends(start_yr, end_yr)
+    trend_sources = fetch_funding_sources(fiscal_years=(start_yr, end_yr))
+    trend_sources = include_deflator_source(trend_sources)
     if df_trends.empty:
         st.info("No funding data for that year range.")
     else:
@@ -290,6 +577,11 @@ with tab_trends:
             id_vars=["agency"], value_vars=year_cols,
             var_name="fiscal_year", value_name="amount_k",
         )
+        if constant_dollars:
+            from analysis.deflators import apply_deflator
+            long["amount_k"] = apply_deflator(
+                long, amount_column="amount_k"
+            )
         long["amount_b"] = long["amount_k"] / 1e6
         long["fiscal_year"] = long["fiscal_year"].astype(int)
         long = long[long["amount_b"] > 0]
@@ -299,7 +591,13 @@ with tab_trends:
             .mark_line(strokeWidth=2, point=alt.OverlayMarkDef(filled=True, size=45))
             .encode(
                 x=alt.X("fiscal_year:O", title="Fiscal Year"),
-                y=alt.Y("amount_b:Q", title="$ Billions"),
+                y=alt.Y(
+                    "amount_b:Q",
+                    title=(
+                        "$ Billions (constant FY2025)"
+                        if constant_dollars else "$ Billions (then-year)"
+                    ),
+                ),
                 color=alt.Color("agency:N", scale=AGENCY_COLORS, title="Component"),
                 tooltip=[
                     alt.Tooltip("agency:N", title="Component"),
@@ -313,10 +611,30 @@ with tab_trends:
         st.caption(
             "Each year shows its most reliable figure: reported actuals, then "
             "enacted, then the budget request. Discretionary only — "
-            "reconciliation/mandatory funds are tracked separately."
+            "reconciliation/mandatory funds are tracked separately. "
+            + (
+                "Amounts use the RDT&E-specific FY2025 Green Book deflator."
+                if constant_dollars else "Amounts are then-year dollars."
+            )
         )
+        render_provenance(trend_sources)
         with st.expander("Data table"):
-            st.dataframe(df_trends, width="stretch", hide_index=True)
+            trend_table = df_trends.copy()
+            if constant_dollars:
+                from analysis.deflators import convert_amount
+                for column in [c for c in trend_table.columns if c.isdigit()]:
+                    trend_table[column] = trend_table[column].apply(
+                        lambda amount, year=int(column): convert_amount(
+                            amount, year
+                        )
+                    )
+            st.dataframe(trend_table, width="stretch", hide_index=True)
+            render_table_downloads(
+                trend_table,
+                name=f"rdte_component_trends_fy{start_yr}_{end_yr}",
+                key=f"trends::{start_yr}::{end_yr}",
+                sources=trend_sources,
+            )
 
     st.divider()
     st.subheader("Who got paid — account-level obligations")
@@ -349,13 +667,32 @@ with tab_trends:
                 f"{exec_comp} RDT&E account, FY{exec_fy}. DoD awards post "
                 "with a ~90-day delay; the current fiscal year is partial."
             )
+            usa_source = [{
+                "filename": "USAspending.gov live API query",
+                "document_type": "USAspending API",
+                "publication_year": exec_fy,
+                "source_url": "https://api.usaspending.gov/",
+                "retrieved_at": None,
+                "processed_date": None,
+            }]
+            render_provenance(usa_source)
+            render_table_downloads(
+                breakdown,
+                name=f"{exec_comp}_rdte_obligations_fy{exec_fy}_{exec_dim}",
+                key=f"breakdown::{exec_comp}::{exec_fy}::{exec_dim}",
+                sources=usa_source,
+            )
 
 # ═══════════════════════════════ Program Finder ══════════════════════════════
 with tab_finder:
     st.header("Find a program")
+    linked_pe = st.query_params.get("pe", "")
     query = st.text_input(
         "Search — program name, quote from an article, or PE number",
+        value=(f"PE {linked_pe}" if linked_pe else ""),
         placeholder='e.g. "launched effects", DARPA Tactical Technology, 0602345A',
+        key="program_query",
+        on_change=_sync_finder_url,
     )
 
     if query:
@@ -432,6 +769,16 @@ with tab_finder:
                 for c in candidates
             ]
             default_idx = 0
+            linked_agency = st.query_params.get("agency", "")
+            if linked_pe:
+                for i, candidate in enumerate(candidates):
+                    if (
+                        candidate["pe_number"] == linked_pe
+                        and (not linked_agency
+                             or candidate["agency"] == linked_agency)
+                    ):
+                        default_idx = i
+                        break
             if adjudication and not adjudication.get("no_match"):
                 for i, c in enumerate(candidates):
                     if (
@@ -468,10 +815,36 @@ with tab_finder:
             else:
                 sel = candidates[0]
 
+            if (
+                st.query_params.get("pe") != sel["pe_number"]
+                or st.query_params.get("agency") != sel["agency"]
+            ):
+                st.query_params.update(
+                    pe=sel["pe_number"], agency=sel["agency"]
+                )
+
             # ═══ Program profile ═══
-            sub_funding, sub_plans, sub_awards, sub_news = st.tabs(
-                ["Funding", "Plans & Work", "Contracts & Awards", "In the News"]
+            profile_definitions = [
+                ("funding", "Funding"),
+                ("plans", "Plans & Work"),
+                ("awards", "Contracts & Awards"),
+                ("news", "In the News"),
+            ]
+            requested_view = st.query_params.get("view", "funding")
+            if requested_view not in {key for key, _ in profile_definitions}:
+                requested_view = "funding"
+            ordered_views = sorted(
+                profile_definitions, key=lambda item: item[0] != requested_view
             )
+            profile_containers = st.tabs([label for _, label in ordered_views])
+            profile_tabs = {
+                key: container
+                for (key, _), container in zip(ordered_views, profile_containers)
+            }
+            sub_funding = profile_tabs["funding"]
+            sub_plans = profile_tabs["plans"]
+            sub_awards = profile_tabs["awards"]
+            sub_news = profile_tabs["news"]
 
             # --- Funding ---
             with sub_funding:
@@ -482,10 +855,20 @@ with tab_finder:
                 if hist.is_empty():
                     st.info(
                         "No funding lines for this program in the database "
-                        "(R-1 coverage: FY1998–FY2027)."
+                        "(R-1 coverage: FY1996–FY2027)."
                     )
                 else:
                     pdf = hist.to_pandas()
+                    pdf["pb_cycle_label"] = pdf["pb_cycle"].apply(
+                        lambda value: (
+                            f"PB{int(value)}" if pd.notna(value) else "Unknown"
+                        )
+                    )
+                    if constant_dollars:
+                        from analysis.deflators import apply_deflator
+                        pdf["amount_thousands"] = apply_deflator(
+                            pdf, amount_column="amount_thousands"
+                        )
                     pdf["amount_m"] = pdf["amount_thousands"] / 1_000.0
                     pdf["yoy_pct"] = pdf["amount_m"].pct_change() * 100.0
 
@@ -521,7 +904,13 @@ with tab_finder:
                         x=alt.X("fiscal_year:O", title="Fiscal Year")
                     )
                     line = base.mark_line(color="#c3c2b7", strokeWidth=2).encode(
-                        y=alt.Y("amount_m:Q", title="$ Millions"),
+                        y=alt.Y(
+                            "amount_m:Q",
+                            title=(
+                                "$ Millions (constant FY2025)"
+                                if constant_dollars else "$ Millions (then-year)"
+                            ),
+                        ),
                     )
                     points = base.mark_point(filled=True, size=90).encode(
                         y="amount_m:Q",
@@ -531,6 +920,7 @@ with tab_finder:
                             alt.Tooltip("fiscal_year:O", title="FY"),
                             alt.Tooltip("amount_m:Q", format=",.1f", title="$M"),
                             alt.Tooltip("basis:N", title="Basis"),
+                            alt.Tooltip("pb_cycle_label:N", title="Submission"),
                         ],
                     )
                     st.altair_chart((line + points).properties(height=280),
@@ -538,8 +928,21 @@ with tab_finder:
                     st.caption(
                         "Each year shows its most reliable figure: reported "
                         "actuals, then the enacted/current-year figure, then "
-                        "the budget request."
+                        "the budget request. Tooltips identify the PB "
+                        "submission supplying each observation. "
+                        + (
+                            "Amounts use the RDT&E-specific FY2025 Green Book "
+                            "deflator."
+                            if constant_dollars else
+                            "Amounts are then-year dollars."
+                        )
                     )
+                    program_sources = fetch_funding_sources(
+                        pe_numbers=(sel["pe_number"],),
+                        agencies=(sel["agency"],),
+                    )
+                    program_sources = include_deflator_source(program_sources)
+                    render_provenance(program_sources)
 
                     yoy_df = pdf.dropna(subset=["yoy_pct"])
                     if not yoy_df.empty:
@@ -562,12 +965,87 @@ with tab_finder:
                                         width="stretch")
 
                     with st.expander("Underlying funding table"):
+                        funding_table = pdf[[
+                            "fiscal_year", "amount_thousands", "basis",
+                            "pb_cycle_label",
+                        ]].rename(columns={
+                            "fiscal_year": "FY",
+                            "amount_thousands": "$K",
+                            "basis": "Basis",
+                            "pb_cycle_label": "PB submission",
+                        })
                         st.dataframe(
-                            pdf[["fiscal_year", "amount_thousands", "basis"]]
-                            .rename(columns={"fiscal_year": "FY",
-                                             "amount_thousands": "$K",
-                                             "basis": "Basis"}),
+                            funding_table,
                             width="stretch", hide_index=True,
+                        )
+                        render_table_downloads(
+                            funding_table,
+                            name=f"{sel['pe_number']}_funding_history",
+                            key=f"funding::{sel['pe_number']}::{sel['agency']}",
+                            sources=program_sources,
+                        )
+
+                st.divider()
+                st.subheader("Execution: request to net current program")
+                execution, execution_source_rows = fetch_execution_data(
+                    (sel["pe_number"],), (sel["agency"],)
+                )
+                if execution.empty:
+                    st.caption(
+                        "No DD 1416 execution row is currently ingested for "
+                        "this PE and component. Missing coverage is not zero."
+                    )
+                else:
+                    available_fys = sorted(
+                        execution["fy_start"].astype(int).unique(), reverse=True
+                    )
+                    execution_fy = st.selectbox(
+                        "Execution fiscal year",
+                        available_fys,
+                        key=f"execution_fy::{sel['pe_number']}::{sel['agency']}",
+                    )
+                    execution_row = execution[
+                        execution["fy_start"] == execution_fy
+                    ].sort_values("report_date").iloc[-1]
+                    request_m = execution_row["request_k"] / 1e3
+                    enacted_m = execution_row["enacted_k"] / 1e3
+                    net_m = execution_row["net_k"] / 1e3
+                    reprogramming_m = (
+                        execution_row["above_threshold_reprog_k"]
+                        + execution_row["below_threshold_reprog_k"]
+                    ) / 1e3
+                    e1, e2, e3, e4 = st.columns(4)
+                    e1.metric("President's request", f"${request_m:,.1f}M")
+                    e2.metric("Enacted", f"${enacted_m:,.1f}M")
+                    e3.metric("Reprogramming", f"${reprogramming_m:+,.1f}M")
+                    e4.metric("Net current program", f"${net_m:,.1f}M")
+                    st.altair_chart(
+                        execution_waterfall(execution_row), width="stretch"
+                    )
+                    st.caption(
+                        "Above-threshold reprogramming required congressional "
+                        "prior approval; below-threshold reprogramming did not. "
+                        "DD 1416 reports budget authority—not obligations or "
+                        "outlays. Amounts are then-year dollars. Latest "
+                        "ingested quarter for this FY: "
+                        f"{execution_row['report_date']}."
+                    )
+                    render_provenance(execution_source_rows)
+                    execution_table = execution.rename(columns={
+                        "fy_start": "FY",
+                        "fy_end": "Availability end FY",
+                        "report_date": "Latest quarter",
+                    })
+                    with st.expander("Execution data table"):
+                        st.dataframe(
+                            execution_table, width="stretch", hide_index=True
+                        )
+                        render_table_downloads(
+                            execution_table,
+                            name=f"{sel['pe_number']}_dd1416_execution",
+                            key=(f"execution::{sel['pe_number']}::"
+                                 f"{sel['agency']}"),
+                            sources=execution_source_rows,
                         )
 
             # --- Plans & Work (R-2 justification narratives) ---
@@ -641,6 +1119,8 @@ with tab_finder:
                                 f"FY{y} ({year_tag.get(best_rank[y], 'plan')})"
                             ),
                             key=f"acc_fy::{sel['pe_number']}",
+                            on_change=_sync_profile_view,
+                            args=("plans",),
                         )
                         year_accs = sorted(
                             (a for a in accs
@@ -671,7 +1151,11 @@ with tab_finder:
                     index=EXECUTION_FYS.index(2025), key="award_fy",
                 )
                 awards_key = f"awards::{sel['pe_number']}::{award_fy}::{query}"
-                if st.button("Search awards (USAspending.gov)"):
+                if st.button(
+                    "Search awards (USAspending.gov)",
+                    on_click=_sync_profile_view,
+                    args=("awards",),
+                ):
                     with st.spinner("Querying USAspending.gov..."):
                         st.session_state[awards_key] = fetch_program_awards(
                             sel["name"], sel["agency"], award_fy, query
@@ -701,10 +1185,12 @@ with tab_finder:
                         display["description"] = (
                             display["description"].str.slice(0, 140)
                         )
+                        award_table = display[[
+                            "recipient", "amount_m", "instrument",
+                            "sub_agency", "start_date", "description", "url",
+                        ]]
                         st.dataframe(
-                            display[["recipient", "amount_m", "instrument",
-                                     "sub_agency", "start_date",
-                                     "description", "url"]],
+                            award_table,
                             width="stretch", hide_index=True,
                             column_config={
                                 "recipient": "Recipient",
@@ -724,9 +1210,29 @@ with tab_finder:
                             "treat as leads, not a ledger: public award "
                             "records carry no program-element linkage."
                         )
+                        award_sources = [{
+                            "filename": "USAspending.gov award search",
+                            "document_type": "USAspending API",
+                            "publication_year": award_fy,
+                            "source_url": "https://api.usaspending.gov/",
+                            "retrieved_at": None,
+                            "processed_date": None,
+                        }]
+                        render_provenance(award_sources)
+                        render_table_downloads(
+                            award_table,
+                            name=f"{sel['pe_number']}_awards_fy{award_fy}",
+                            key=(f"awards::{sel['pe_number']}::{award_fy}::"
+                                 f"{query}"),
+                            sources=award_sources,
+                        )
 
                     subs_key = f"subs::{sel['pe_number']}::{award_fy}::{query}"
-                    if st.button("Search subawards (umbrella vehicles)"):
+                    if st.button(
+                        "Search subawards (umbrella vehicles)",
+                        on_click=_sync_profile_view,
+                        args=("awards",),
+                    ):
                         with st.spinner("Querying subawards..."):
                             st.session_state[subs_key] = fetch_program_subawards(
                                 sel["name"], award_fy, query
@@ -744,10 +1250,12 @@ with tab_finder:
                             sdisp["description"] = (
                                 sdisp["description"].str.slice(0, 140)
                             )
+                            subaward_table = sdisp[[
+                                "subawardee", "amount_m", "prime_recipient",
+                                "date", "description",
+                            ]]
                             st.dataframe(
-                                sdisp[["subawardee", "amount_m",
-                                       "prime_recipient", "date",
-                                       "description"]],
+                                subaward_table,
                                 width="stretch", hide_index=True,
                                 column_config={
                                     "subawardee": "Subawardee",
@@ -757,6 +1265,23 @@ with tab_finder:
                                     "date": "Date",
                                     "description": "Description",
                                 },
+                            )
+                            subaward_sources = [{
+                                "filename": "USAspending.gov subaward search",
+                                "document_type": "USAspending API",
+                                "publication_year": award_fy,
+                                "source_url": "https://api.usaspending.gov/",
+                                "retrieved_at": None,
+                                "processed_date": None,
+                            }]
+                            render_provenance(subaward_sources)
+                            render_table_downloads(
+                                subaward_table,
+                                name=(f"{sel['pe_number']}_subawards_"
+                                      f"fy{award_fy}"),
+                                key=(f"subawards::{sel['pe_number']}::"
+                                     f"{award_fy}::{query}"),
+                                sources=subaward_sources,
                             )
 
             # --- In the News ---
@@ -806,8 +1331,11 @@ with tab_finder:
                         st.caption(
                             "No saved coverage for this program yet."
                         )
-                        if st.button("Search recent coverage "
-                                     "(AI + Google Search)"):
+                        if st.button(
+                            "Search recent coverage (AI + Google Search)",
+                            on_click=_sync_profile_view,
+                            args=("news",),
+                        ):
                             with st.spinner(
                                     "Searching news and public sources..."):
                                 news = enricher.find_open_source_hits(
@@ -820,7 +1348,11 @@ with tab_finder:
                     else:
                         render_ai_result(news, render_hits,
                                          "No recent coverage found.")
-                        if st.button("Refresh coverage (AI + Google Search)"):
+                        if st.button(
+                            "Refresh coverage (AI + Google Search)",
+                            on_click=_sync_profile_view,
+                            args=("news",),
+                        ):
                             with st.spinner("Searching for newer coverage..."):
                                 fresh = enricher.find_open_source_hits(
                                     sel["name"], sel["pe_number"],
@@ -846,7 +1378,9 @@ with tab_rhetoric:
 
     rq = st.text_input(
         "Program to analyze", key="rhetoric_query",
+        value=st.query_params.get("rq", ""),
         placeholder="e.g. launched effects",
+        on_change=_sync_rhetoric_url,
     )
     if rq:
         with st.spinner("Finding the program..."):
@@ -871,10 +1405,17 @@ with tab_rhetoric:
             fy_first, fy_last = congressional_year_bounds()
             if fy_last <= fy_first:          # empty table; keep a valid slider
                 fy_last = fy_first + 1
+            rhet_start = _query_int(
+                "rstart", max(fy_first, fy_last - 7), fy_first, fy_last
+            )
+            rhet_end = _query_int("rend", fy_last, fy_first, fy_last)
+            if rhet_start > rhet_end:
+                rhet_start, rhet_end = max(fy_first, fy_last - 7), fy_last
             yr_lo, yr_hi = st.slider(
                 "Analysis window", fy_first, fy_last,
-                (max(fy_first, fy_last - 7), fy_last),
+                (rhet_start, rhet_end),
                 key="rhet_years",
+                on_change=_sync_rhetoric_url,
                 help="Scopes both the congressional figures and the optional "
                      "AI signal below.",
             )
@@ -896,7 +1437,8 @@ with tab_rhetoric:
                     ca = CongressionalActions(session)
                     ca_pes = [c["pe_number"] for c in sel_cands]
                     ca_agencies = [c["agency"] for c in sel_cands]
-                    ca_series = ca.get_program_series(ca_pes, ca_agencies)
+                    ca_series_all = ca.get_program_series(ca_pes, ca_agencies)
+                    ca_series = ca_series_all
                     ca_rows = ca.get_actions(ca_pes, ca_agencies)
 
                 # The analysis window scopes this section too. Remember what
@@ -1013,14 +1555,14 @@ with tab_rhetoric:
                         )
 
                     with st.expander("Line-by-line committee actions"):
+                        committee_table = ca_rows.to_pandas()[[
+                            "fiscal_year", "chamber", "pe_number",
+                            "program_title", "budget_activity_title",
+                            "request_k", "committee_delta_k",
+                            "authorized_k", "rationale", "report_citation",
+                        ]]
                         st.dataframe(
-                            ca_rows.to_pandas()[[
-                                "fiscal_year", "chamber", "pe_number",
-                                "program_title", "budget_activity_title",
-                                "request_k", "committee_delta_k",
-                                "authorized_k", "rationale",
-                                "report_citation",
-                            ]],
+                            committee_table,
                             width="stretch", hide_index=True,
                             column_config={
                                 "fiscal_year": "FY",
@@ -1038,7 +1580,132 @@ with tab_rhetoric:
                                 "report_citation": "Report",
                             },
                         )
+                        committee_sources = [
+                            {
+                                "filename": citation,
+                                "document_type": "NDAA committee report",
+                                "publication_year": int(
+                                    committee_table.loc[
+                                        committee_table["report_citation"]
+                                        == citation,
+                                        "fiscal_year",
+                                    ].iloc[0]
+                                ),
+                                "source_url": (
+                                    "https://www.govinfo.gov/content/pkg/"
+                                    f"{citation}/html/{citation}.htm"
+                                ),
+                                "retrieved_at": None,
+                                "processed_date": None,
+                            }
+                            for citation in sorted(
+                                committee_table["report_citation"].unique()
+                            )
+                        ]
+                        render_provenance(committee_sources)
+                        render_table_downloads(
+                            committee_table,
+                            name=f"committee_actions_fy{yr_lo}_{yr_hi}",
+                            key=(f"committee::{yr_lo}::{yr_hi}::"
+                                 f"{','.join(ca_pes)}"),
+                            sources=committee_sources,
+                        )
                 st.caption(coverage_note())
+
+                st.subheader("Request → authorization → execution")
+                execution, execution_source_rows = fetch_execution_data(
+                    tuple(ca_pes), tuple(ca_agencies)
+                )
+                execution = execution[
+                    execution["fy_start"].between(yr_lo, yr_hi)
+                ] if not execution.empty else execution
+                if execution.empty:
+                    st.caption(
+                        "No DD 1416 execution record falls inside this "
+                        "window. Authorization above remains distinct from "
+                        "appropriation."
+                    )
+                else:
+                    chain_fys = sorted(
+                        execution["fy_start"].astype(int).unique(), reverse=True
+                    )
+                    chain_fy = st.selectbox(
+                        "Fiscal year for full chain",
+                        chain_fys,
+                        key="rhet_execution_fy",
+                    )
+                    erow = execution[
+                        execution["fy_start"] == chain_fy
+                    ].sort_values("report_date").iloc[-1]
+                    chain = [{
+                        "stage": "President's request",
+                        "amount_m": erow["request_k"] / 1e3,
+                        "kind": "Request",
+                    }]
+                    if not ca_series_all.is_empty():
+                        auth_for_year = ca_series_all.filter(
+                            pl.col("fiscal_year") == chain_fy
+                        ).sort("chamber")
+                        for auth_row in auth_for_year.iter_rows(named=True):
+                            chain.append({
+                                "stage": f"{auth_row['chamber']} authorized",
+                                "amount_m": auth_row["authorized_k"] / 1e3,
+                                "kind": "Authorization",
+                            })
+                    chain.extend([
+                        {
+                            "stage": "Enacted appropriation",
+                            "amount_m": erow["enacted_k"] / 1e3,
+                            "kind": "Appropriation",
+                        },
+                        {
+                            "stage": "Net current program",
+                            "amount_m": erow["net_k"] / 1e3,
+                            "kind": "Execution",
+                        },
+                    ])
+                    chain_df = pd.DataFrame(chain)
+                    chain_order = chain_df["stage"].tolist()
+                    chain_chart = (
+                        alt.Chart(chain_df)
+                        .mark_bar(cornerRadiusEnd=4)
+                        .encode(
+                            x=alt.X("stage:N", sort=chain_order, title=None,
+                                    axis=alt.Axis(labelAngle=-25)),
+                            y=alt.Y("amount_m:Q", title="$ Millions"),
+                            color=alt.Color(
+                                "kind:N",
+                                scale=alt.Scale(
+                                    domain=["Request", "Authorization",
+                                            "Appropriation", "Execution"],
+                                    range=["#2a78d6", "#8b6fc0",
+                                           "#1baf7a", "#eb6834"],
+                                ),
+                                title=None,
+                            ),
+                            tooltip=[
+                                alt.Tooltip("stage:N", title="Stage"),
+                                alt.Tooltip("amount_m:Q", format=",.1f",
+                                            title="$M"),
+                            ],
+                        )
+                        .properties(height=280)
+                    )
+                    st.altair_chart(chain_chart, width="stretch")
+                    st.caption(
+                        "House and Senate authorizations are shown separately. "
+                        "DD 1416 supplies enacted appropriation and the latest "
+                        "net program after statutory adjustments and "
+                        "reprogramming; it does not report outlays. All stages "
+                        "in this chart are then-year dollars."
+                    )
+                    render_provenance(execution_source_rows)
+                    render_table_downloads(
+                        chain_df,
+                        name=f"request_authorization_execution_fy{chain_fy}",
+                        key=f"rhet-chain::{chain_fy}::{','.join(ca_pes)}",
+                        sources=execution_source_rows,
+                    )
 
             # ── Optional AI layer: open-source emphasis ───────────────────
             st.divider()
@@ -1219,10 +1886,13 @@ with tab_rhetoric:
                                          if row["notable_statement"] else ""),
                             axis=1,
                         )
+                        rhetoric_table = merged[[
+                            "fiscal_year", "mention_intensity",
+                            "positive_pct", "stated_priority", "amount_m",
+                            "yoy_pct", "statement",
+                        ]]
                         st.dataframe(
-                            merged[["fiscal_year", "mention_intensity",
-                                    "positive_pct", "stated_priority",
-                                    "amount_m", "yoy_pct", "statement"]],
+                            rhetoric_table,
                             width="stretch", hide_index=True,
                             column_config={
                                 "fiscal_year": "FY",
@@ -1237,6 +1907,22 @@ with tab_rhetoric:
                                     .NumberColumn("YoY %", format="%+.1f"),
                                 "statement": "Notable statement",
                             },
+                        )
+                        rhetoric_sources = [{
+                            "filename": "Per-user Gemini Grounded Search result",
+                            "document_type": "AI-grounded web research",
+                            "publication_year": yr_hi,
+                            "source_url": None,
+                            "retrieved_at": sig_res.created_at,
+                            "processed_date": sig_res.created_at,
+                        }]
+                        render_provenance(rhetoric_sources)
+                        render_table_downloads(
+                            rhetoric_table,
+                            name=f"rhetoric_funding_fy{yr_lo}_{yr_hi}",
+                            key=(f"rhetoric::{yr_lo}::{yr_hi}::"
+                                 f"{','.join(c['pe_number'] for c in sel_cands)}"),
+                            sources=rhetoric_sources,
                         )
 
             with st.expander("Methodology & caveats"):
@@ -1311,7 +1997,8 @@ with tab_coverage:
     st.markdown(f"""
 | Source | Coverage | How it's used |
 |---|---|---|
-| **R-1 budget exhibits** (comptroller.war.gov) | FY1998–FY2027 requests; FY2026 enacted. Official XLSX for FY2012+; parsed PDFs before that | Funding trends and program funding histories (local database) |
+| **R-1 budget exhibits** (comptroller.war.gov) | FY{stats['fy_min']}–FY{stats['fy_max']} observations across PB submissions. Official XLSX for FY2012+; parsed PDFs before that | Funding trends, vintage labels, and program funding histories (local database) |
+| **DD 1416 quarterly execution reports** (comptroller.war.gov) | {stats['execution_rows']:,} rows from {stats['execution_files']:,} official XLSX files; FY{stats['execution_fy_min'] or '—'}–FY{stats['execution_fy_max'] or '—'} | Request, enacted appropriation, statutory adjustments, above-/below-threshold reprogramming, and net current program |
 | **R-2 justification books** (official XML and service PDFs) | {stats['narratives']:,} narratives and {stats['accomplishments']:,} accomplishment line items. {r2_detail} | Mission descriptions and "Plans & Work"; also sharpens program matching |
 | **USAspending.gov** (live queries) | Prime awards (contracts + grants/cooperative agreements), subawards, account-level obligations | "Contracts & Awards" and "Who got paid" |
 | **AI enrichment** (optional) | Google-grounded search and match resolution | "In the News", "Rhetoric vs. Budget", and ambiguity resolution |
