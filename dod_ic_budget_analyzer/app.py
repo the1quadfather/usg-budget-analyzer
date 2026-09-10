@@ -182,6 +182,18 @@ def init_db_connection():
     engine = get_engine(DB_PATH)
     return get_session_factory(engine)
 
+
+@st.cache_resource
+def load_lexical_linker():
+    """Build the fast matcher without importing the transformer stack."""
+    SessionFactory = init_db_connection()
+    with SessionFactory() as session:
+        fuzzy = ProgramMatcher(session)
+    return ProgramLinker(
+        fuzzy, None, fuzzy_threshold=80.0, semantic_threshold=0.45
+    )
+
+
 @st.cache_resource
 def load_lexical_linker():
     """Build the fast matcher without importing the transformer stack."""
@@ -212,7 +224,8 @@ def load_matching_models():
                 "running name-similarity matching only."
             )
     return ProgramLinker(
-        lexical.fuzzy, semantic,
+        lexical.fuzzy,
+        semantic,
         fuzzy_threshold=80.0, semantic_threshold=0.45,
     )
 
