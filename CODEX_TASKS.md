@@ -219,8 +219,16 @@ There is no DB URI constant in `config.py`; `app.py` builds the URI from its own
 
 ### T8b — Reconciliation panel
 
-**Files:** `app.py` (Data Coverage tab only).
-**Depends on:** T8a merged.
+**Files:** `app.py` (Data Coverage tab only), `tests/test_app_smoke.py` (one new
+assertion).
+**Depends on:** T8a merged (it is: commit `9bc1a9d`, on `main` since 2026-09-10).
+
+**What T8a found, so the panel says it plainly [verified 2026-09-10]:** for PB2027 every
+DoD-scope row ties to zero once the four non-RDT&E accounts (`0130D`, `0390D`, `3007D`,
+`0107D`) are excluded; the `reference_k` on a DoD-scope row is therefore the printed
+grand total *minus* those accounts, and the caption must say so. The DD 1416 comparison
+shows large residuals for early years (for example Air Force FY2012). Show them; they are
+a finding, not a bug in the panel.
 
 **Do:** add a "Does it tie?" section at the bottom of Data Coverage: one `st.dataframe`
 per source (R-1, DD 1416) with columns FY, Component, Stream, Basis, Ingested $K,
@@ -231,6 +239,12 @@ Published $K, Residual $K, Residual %, Status, Explanation. Colour nothing; use 
 - The panel renders with the shipped database and every row has a non-empty `Status`.
 - Rows with `outside_tolerance` show their `Explanation`; none are filtered out.
 - `render_table_downloads` is wired for each table with the R-1 or DD 1416 sources.
+- `tie_out_r1()` needs the raw directory: pass
+  `Path(__file__).parent / "data" / "raw" / "comptroller"`. On the hosted app that
+  directory is empty, so every R-1 row is `no_reference`; the panel must still render and
+  its caption must say the workbooks are not shipped with the app.
+- Wrap both calls in `@st.cache_data(ttl=3600)` helpers like `fetch_coverage_stats()`;
+  the R-1 tie-out opens workbooks and must not run on every rerun.
 - `tests/test_app_smoke.py` still passes; add an assertion that the Data Coverage tab
   contains the text "Does it tie".
 - Clicked through in a browser; the Data Coverage tab is still the fourth tab.
