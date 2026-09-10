@@ -20,7 +20,9 @@ CODEX_TASKS.md. Implement exactly that task and nothing else.
 
 Before writing code: restate the definition of done in your own words, list the files you
 will create or change, and name anything in the task that the code or data contradicts.
-If there is a contradiction, stop there and report it instead of improvising.
+If a contradiction changes the files, the types, or the definition of done, stop there and
+report it instead of improvising. If it only affects an explanatory sentence, choose the
+reading that keeps the definition of done intact, say which you chose, and continue.
 
 Work on a branch named codex/<task-id>. Follow the invariants in CODEX_HANDOFF.md section
 2. Do not reformat files you touch, and do not change code outside the task's file list.
@@ -169,8 +171,14 @@ def tie_out_dd1416(session, *, tolerance_pct: float = 0.5) -> list[TieOutRow]: .
 - `FY 2026 PL 119-21 Spend Plan` (mandatory): database 44,365,621 vs. workbook
   65,462,721. This gap is too large to be the excluded accounts alone. **Report it with
   the per-account breakdown and stop**; do not change the ingest in this task.
-- Classified placeholder PEs (`pe_number` starting `9999`) are in both sources and
-  should tie; name them in `explanation` only if they do not.
+- Classified lines. The workbook prints them as `PE/BLI = 9999999999`, title
+  `Classified Programs`, one row per account. The ingest deliberately stores them with an
+  **empty** `pe_number` and `program_name = "Classified Programs"` (see
+  `parsing/xlsx_ingest.py`, the `startswith("999")` branch); the database holds five such
+  `program_elements` rows, one per component, and their `funding_lines` are real money.
+  Sum `funding_lines` by account/agency **without filtering on `pe_number`**, so these
+  rows are included on both sides and tie naturally. Do not add a name-based lookup and
+  do not touch the parser.
 
 **`tie_out_dd1416()`**: for each (`fy_start`, `agency`), compare the sum of
 `pe_execution.enacted_k` from the latest `report_date` against the R-1

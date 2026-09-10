@@ -15,7 +15,10 @@ the long-form context lives in the files it points to.
   example `codex/t8a`). Never commit directly to `main`; open a PR or hand the branch back.
 - **Do exactly the task's scope.** If you notice something else worth fixing, write it
   in your final report; do not fix it in the same change.
-- **If the code or data contradicts the task, stop and report.** Do not loosen a parser,
+- **If the code or data contradicts the task, decide how much it matters.** A
+  contradiction that changes the files, the types, or the definition of done: stop and
+  report. One that only affects an explanatory sentence: pick the reading that keeps the
+  definition of done intact, state it in the report, and continue. Never loosen a parser,
   widen a tolerance, or invent a fallback URL so that the task "passes".
 - **Never reorder `st.tabs()` labels between reruns.** Streamlit keeps the selected tab
   by position in the browser, so reordering maps one tab's content under another's label.
