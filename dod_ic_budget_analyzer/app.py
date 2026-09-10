@@ -37,6 +37,7 @@ from analysis.provenance import (
 )
 from analysis.trend_tracker import TrendTracker
 from analysis.text_render import escape_dollars
+from analysis import primer
 from analysis.user_identity import streamlit_user_id
 
 # --- Configuration & State Setup ---
@@ -433,6 +434,12 @@ def fetch_execution_data(
         frame.to_pandas() if not frame.is_empty() else pd.DataFrame(),
         sources,
     )
+
+
+def render_primer(title: str, body: str, *, expanded: bool = False) -> None:
+    """A collapsed plain-language explainer placed next to the numbers."""
+    with st.expander(title, expanded=expanded):
+        st.markdown(escape_dollars(body))
 
 
 def render_provenance(sources: list[dict]) -> None:
@@ -955,6 +962,10 @@ with tab_finder:
 
             # --- Funding ---
             with sub_funding:
+                render_primer(
+                    "How to read this program's funding",
+                    primer.PROGRAM_STRUCTURE + primer.FUNDING_BASES,
+                )
                 with SessionFactory() as session:
                     hist = TrendTracker(session).get_pe_history(
                         sel["pe_number"], sel["agency"]
@@ -990,23 +1001,27 @@ with tab_finder:
                         f"FY{int(latest.fiscal_year)} ({latest.basis})",
                         f"${latest.amount_m:,.1f}M",
                         delta=delta,
+                        help=primer.HELP["latest"],
                     )
                     peak = pdf.loc[pdf["amount_m"].idxmax()]
                     m2.metric(f"Peak (FY{int(peak.fiscal_year)})",
-                              f"${peak.amount_m:,.1f}M")
+                              f"${peak.amount_m:,.1f}M",
+                              help=primer.HELP["peak"])
                     m3.metric(
                         "History",
                         f"{len(pdf)} yrs",
                         delta=(f"FY{int(pdf.fiscal_year.min())}–"
                                f"FY{int(pdf.fiscal_year.max())}"),
                         delta_color="off",
+                        help=primer.HELP["history"],
                     )
                     first = pdf.iloc[0]
                     span = int(latest.fiscal_year - first.fiscal_year)
                     if span > 0 and first.amount_m > 0 and latest.amount_m > 0:
                         cagr = ((latest.amount_m / first.amount_m)
                                 ** (1 / span) - 1) * 100
-                        m4.metric(f"CAGR ({span}y)", f"{cagr:+.1f}%")
+                        m4.metric(f"CAGR ({span}y)", f"{cagr:+.1f}%",
+                                  help=primer.HELP["cagr"])
 
                     base = alt.Chart(pdf).encode(
                         x=alt.X("fiscal_year:O", title="Fiscal Year")
@@ -1095,6 +1110,10 @@ with tab_finder:
 
                 st.divider()
                 st.subheader("Execution: request to net current program")
+                render_primer(
+                    "What each step means, and why the numbers differ",
+                    primer.EXECUTION_STEPS,
+                )
                 execution, execution_source_rows = fetch_execution_data(
                     (sel["pe_number"],), (sel["agency"],)
                 )
@@ -1123,10 +1142,14 @@ with tab_finder:
                         + execution_row["below_threshold_reprog_k"]
                     ) / 1e3
                     e1, e2, e3, e4 = st.columns(4)
-                    e1.metric("President's request", f"${request_m:,.1f}M")
-                    e2.metric("Enacted", f"${enacted_m:,.1f}M")
-                    e3.metric("Reprogramming", f"${reprogramming_m:+,.1f}M")
-                    e4.metric("Net current program", f"${net_m:,.1f}M")
+                    e1.metric("President's request", f"${request_m:,.1f}M",
+                              help=primer.HELP["request"])
+                    e2.metric("Enacted", f"${enacted_m:,.1f}M",
+                              help=primer.HELP["enacted"])
+                    e3.metric("Reprogramming", f"${reprogramming_m:+,.1f}M",
+                              help=primer.HELP["reprogramming"])
+                    e4.metric("Net current program", f"${net_m:,.1f}M",
+                              help=primer.HELP["net"])
                     st.altair_chart(
                         execution_waterfall(execution_row), width="stretch"
                     )
@@ -1158,6 +1181,7 @@ with tab_finder:
 
             # --- Plans & Work (R-2 justification narratives) ---
             with sub_plans:
+                st.caption(primer.PROJECTS_NOTE)
                 from sqlalchemy import select as sa_select
                 from storage.db import PEAccomplishment, PENarrative
                 with SessionFactory() as session:
@@ -1253,6 +1277,8 @@ with tab_finder:
 
             # --- Contracts & Awards ---
             with sub_awards:
+                render_primer("Why awards never tie to the budget figures",
+                              primer.AWARDS_VS_BUDGET)
                 ac1, _ = st.columns([1, 3])
                 award_fy = ac1.selectbox(
                     "Fiscal year", EXECUTION_FYS,
@@ -1541,6 +1567,8 @@ with tab_rhetoric:
                 )
 
                 st.subheader("What Congress authorized")
+                render_primer("Authorization versus appropriation",
+                              primer.AUTHORIZATION_VS_APPROPRIATION)
                 with SessionFactory() as session:
                     ca = CongressionalActions(session)
                     ca_pes = [c["pe_number"] for c in sel_cands]
@@ -1721,6 +1749,8 @@ with tab_rhetoric:
                 st.caption(coverage_note())
 
                 st.subheader("Request → authorization → execution")
+                render_primer("What each stage means",
+                              primer.EXECUTION_STEPS)
                 execution, execution_source_rows = fetch_execution_data(
                     tuple(ca_pes), tuple(ca_agencies)
                 )
@@ -2074,6 +2104,11 @@ with tab_coverage:
               delta_color="off")
     s3.metric("Programs with narratives", f"{stats['narrative_pes']:,}")
     s4.metric("Work line items", f"{stats['accomplishments']:,}")
+    render_primer(
+        "How the numbers relate: program elements, projects, request, "
+        "authorization, appropriation, execution, and awards",
+        primer.GLOSSARY,
+    )
 
     if get_enricher() is None:
         st.caption(
