@@ -91,10 +91,42 @@ says `_m` or `_millions`.
 
 **Files:** new `analysis/reconcile.py`, new `tests/test_reconcile.py`.
 **Depends on:** nothing.
+**Revised 2026-09-10** after Codex correctly stopped: the first version of this task
+named a file that does not exist and a "Total" row the workbook does not print.
 
-**Do:** compute, per fiscal year and per component, whether the ingested R-1 lines sum to
-the component's published RDT&E total, and whether DD 1416 enacted sums tie to the same
-figure where both exist.
+**Get the source files first.** Raw exhibits are gitignored, so a fresh clone has none.
+Download the official R-1 workbooks (FY2012 onward exist; earlier years are PDF-only):
+
+```bash
+python acquisition/comptroller_scraper.py --xlsx --years 2027 2026 2025 2024 --exhibits rdtee
+```
+
+They land at `data/raw/comptroller/{FY}/rdtee/fy{FY}_r1.xlsx`. The `{FY}` in the path is
+the **PB cycle** (the submission year), which is `funding_lines.pb_cycle`.
+
+**Workbook structure [verified 2026-09-10 on fy2027_r1.xlsx]:**
+- Sheet `Exhibit R-1` holds everything; the per-column sheets repeat it.
+- Row 0 is a single **DoD-wide** total: cell G0 reads `Total of Displayed Rows` and each
+  amount column carries the sum of every row below it. There are **no per-component
+  total rows.**
+- Row 1 is the header. Columns: `Account` (e.g. `2040A`), `Account Title`,
+  `Organization`, `Budget Activity`, `Budget Activity Title`, `Line Number`, `PE/BLI`,
+  `Program Element/Budget Line Item (BLI) Title`, `Include In TOA`, then the amount
+  columns, then `Classification`.
+- Amount columns name the year, the stream, and the basis, for example
+  `FY 2025 Actuals` (discretionary), `FY 2025 Reconciliation` (mandatory),
+  `FY 2026 Discretionary Enacted`, `FY 2026 PL 119-21 Spend Plan` (mandatory),
+  `FY 2027 Discretionary Request`, `FY 2027 Mandatory Request`, and a `FY … Total` for
+  each year. Map them **by header text**; older cycles use different wording for the
+  mandatory column and some have none.
+- Amounts are thousands of dollars, stored as strings; blank means no line, not zero.
+
+**Reference figures.** Two, both read fresh from the workbook and never from memory:
+1. **Grand total**: the printed `Total of Displayed Rows` value for the column
+   (DoD-wide, per fiscal year, stream, and basis).
+2. **Per-account sum**: your own sum of the rows in that column grouped by `Account`.
+   Verified 2026-09-10 that the per-account sums add exactly to the printed grand total
+   for `FY 2027 Discretionary Request` (219,868,448).
 
 **Types:**
 
@@ -103,39 +135,61 @@ from dataclasses import dataclass
 from typing import Literal
 
 Stream = Literal["discretionary", "mandatory"]
+Basis = Literal["PY Actual", "CY Request", "BY Request"]
 TieStatus = Literal["ties", "outside_tolerance", "no_reference"]
 
 @dataclass(frozen=True)
 class TieOutRow:
-    fiscal_year: int
-    agency: str                 # a program_elements.agency value
+    pb_cycle: int               # workbook / funding_lines.pb_cycle
+    fiscal_year: int            # the column's year
+    scope: str                  # "DoD" for the grand total, else an Account code like "2040A"
+    agency: str | None          # program_elements.agency for the six ingested accounts, else None
     stream: Stream
-    basis: str                  # "PY Actual" | "CY Request" | "BY Request"
-    ingested_k: float           # sum of funding_lines.amount_thousands
-    reference_k: float | None   # published topline, thousands; None if not recoverable
-    residual_k: float | None
+    basis: Basis
+    ingested_k: float           # sum of funding_lines.amount_thousands for this key
+    reference_k: float | None   # workbook figure; None when the workbook is absent
+    residual_k: float | None    # ingested - reference
     residual_pct: float | None
     status: TieStatus
-    explanation: str            # human-readable; required when status != "ties"
+    explanation: str            # required when status != "ties"
 
-def tie_out_r1(session, *, tolerance_pct: float = 0.5) -> list[TieOutRow]: ...
+def tie_out_r1(session, raw_dir: Path, *, tolerance_pct: float = 0.5) -> list[TieOutRow]: ...
 def tie_out_dd1416(session, *, tolerance_pct: float = 0.5) -> list[TieOutRow]: ...
 ```
 
-**Reference figure:** the component "Total" row in each `r1_display.xlsx` under
-`data/raw/comptroller/` (the parser drops it today). Open one workbook first and confirm
-the row exists and which column carries each funding type. If it cannot be recovered for a
-year, emit `status="no_reference"` — never substitute a number from memory or the web.
+**Known residuals to model, not hide [verified 2026-09-10, PB2027 workbook vs. database]:**
+- The ingest keeps only the six RDT&E appropriation accounts (`2040A`, `1319N`, `3600F`,
+  `3620F`, `0400D`, `0460D`). The workbook also lists `0130D`, `0390D`, `3007D`, and
+  `0107D`. For `FY 2027 Discretionary Request` those four sum to exactly the residual
+  (1,474,811 of 219,868,448). Emit them as their own `scope` rows with
+  `explanation="account not ingested (non-RDT&E appropriation)"` and exclude them from the
+  DoD-scope comparison so that row can tie.
+- `FY 2025 Actuals`: database 142,654,463 vs. workbook 145,106,561. Part is the four
+  accounts above; the rest must be enumerated per account, not absorbed into tolerance.
+- `FY 2026 PL 119-21 Spend Plan` (mandatory): database 44,365,621 vs. workbook
+  65,462,721. This gap is too large to be the excluded accounts alone. **Report it with
+  the per-account breakdown and stop**; do not change the ingest in this task.
+- Classified placeholder PEs (`pe_number` starting `9999`) are in both sources and
+  should tie; name them in `explanation` only if they do not.
+
+**`tie_out_dd1416()`**: for each (`fy_start`, `agency`), compare the sum of
+`pe_execution.enacted_k` from the latest `report_date` against the R-1
+`CY Request` figure for that year from PB `fy_start + 1`. These are different documents
+describing the same enacted amount, so a residual here is informative rather than a parse
+error; report it and explain what you can.
 
 **Definition of done:**
-- `tie_out_r1()` returns one row per (fiscal_year, agency, stream, basis) present in
-  `funding_lines`.
-- Classified placeholder PEs (`pe_number` starting `9999`) and the mandatory stream are
-  handled explicitly and named in `explanation` when they are why a year does not tie.
-- A test builds an in-memory SQLite with five hand-entered lines and one reference total
-  and asserts `status` and `residual_k` exactly. A second test asserts `no_reference`
-  when the total is absent.
-- No change to any ingest or parser. If tying requires one, stop and report.
+- `tie_out_r1()` returns one `scope="DoD"` row per (pb_cycle, fiscal_year, stream, basis)
+  in every downloaded workbook, plus one row per Account code in that column.
+- Workbooks that are not on disk produce `no_reference` rows for their pb_cycle, with
+  the download command in `explanation`.
+- Every `outside_tolerance` row has a specific `explanation`; "unknown" is acceptable
+  only with the per-account figures attached.
+- Tests: an in-memory SQLite with five hand-entered lines and a tiny hand-built workbook
+  (write it with openpyxl inside the test, two accounts, one column) assert `status`,
+  `residual_k`, and the excluded-account handling exactly; a second test asserts
+  `no_reference` when the workbook path is missing.
+- No change to any ingest or parser. The mandatory-stream gap is reported, not fixed.
 
 **Verify:**
 ```bash
@@ -147,8 +201,10 @@ from analysis.reconcile import tie_out_r1
 uri = "sqlite:///" + Path("data/processed/usg_budgets.db").resolve().as_posix()
 Session = get_session_factory(get_engine(uri))     # same pattern app.py uses
 with Session() as session:
-    rows = tie_out_r1(session)
-print(len(rows), "rows;", sum(r.status == "ties" for r in rows), "tie")
+    rows = tie_out_r1(session, Path("data/raw/comptroller"))
+for r in rows:
+    if r.scope == "DoD":
+        print(r.pb_cycle, r.fiscal_year, r.stream, r.basis, r.status, r.residual_k)
 PY
 ```
 There is no DB URI constant in `config.py`; `app.py` builds the URI from its own path.
