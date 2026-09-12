@@ -97,8 +97,13 @@ P1_REQUIRED_HEADERS = (
     "Account Title",
     "Organization",
     "Budget Activity",
+    "Line Number",
+    "BSA",
+    "Budget SubActivity (BSA) Title",
     "Budget Line Item",
     "Budget Line Item (BLI) Title",
+    "Cost Type",
+    "Cost Type Title",
     "Add/Non-Add",
 )
 P1_SCENARIO_HEADER_RE = re.compile(
@@ -134,6 +139,11 @@ class P1Record:
     agency: str
     appropriation: str
     budget_activity: int | None
+    line_number: str
+    bsa: str
+    bsa_title: str
+    cost_type: str
+    cost_type_title: str
     fiscal_year: int
     funding_type: str
     amount_thousands: float
@@ -532,6 +542,17 @@ def parse_p1(path: Path, *, pb_cycle: int) -> Iterator[P1Record]:
             budget_activity = _p1_budget_activity(
                 cell("Budget Activity"), row_number
             )
+            if budget_activity is None:
+                raise ValueError(
+                    f"Missing Budget Activity at row {row_number}"
+                )
+            line_number = str(cell("Line Number") or "").strip()
+            bsa = str(cell("BSA") or "").strip()
+            bsa_title = str(
+                cell("Budget SubActivity (BSA) Title") or ""
+            ).strip()
+            cost_type = str(cell("Cost Type") or "").strip()
+            cost_type_title = str(cell("Cost Type Title") or "").strip()
             line_item_title = str(
                 cell("Budget Line Item (BLI) Title") or ""
             ).strip()
@@ -555,6 +576,11 @@ def parse_p1(path: Path, *, pb_cycle: int) -> Iterator[P1Record]:
                     agency=_p1_agency(account, appropriation, organization),
                     appropriation=appropriation,
                     budget_activity=budget_activity,
+                    line_number=line_number,
+                    bsa=bsa,
+                    bsa_title=bsa_title,
+                    cost_type=cost_type,
+                    cost_type_title=cost_type_title,
                     fiscal_year=fiscal_year,
                     funding_type=funding_type,
                     amount_thousands=amount,

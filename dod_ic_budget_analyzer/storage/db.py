@@ -122,6 +122,11 @@ class ProcurementLine(Base):
     agency: Mapped[str] = mapped_column(String(100))
     appropriation: Mapped[str] = mapped_column(String(100))
     budget_activity: Mapped[int | None] = mapped_column(Integer)
+    line_number: Mapped[str] = mapped_column(String(10))
+    bsa: Mapped[str] = mapped_column(String(10))
+    bsa_title: Mapped[str] = mapped_column(String(200))
+    cost_type: Mapped[str] = mapped_column(String(10))
+    cost_type_title: Mapped[str] = mapped_column(String(200))
     fiscal_year: Mapped[int] = mapped_column(Integer)
     funding_type: Mapped[str] = mapped_column(String(50))
     amount_thousands: Mapped[float] = mapped_column(Float)
@@ -135,6 +140,10 @@ class ProcurementLine(Base):
             "bli",
             "agency",
             "appropriation",
+            "budget_activity",
+            "line_number",
+            "cost_type",
+            "cost_type_title",
             "fiscal_year",
             "funding_type",
             "pb_cycle",
@@ -400,9 +409,9 @@ def _ensure_schema_compatibility(engine: Engine) -> None:
     """Apply small, additive migrations needed by older shipped databases.
 
     SQLite's ``create_all`` creates new tables but does not add columns to an
-    existing table. These migrations are intentionally additive; the
-    provenance rebuild command populates the new funding-line fields from the
-    tracked parquet corpus.
+    existing table. Migrations preserve stored rows; the empty procurement
+    table can be rebuilt when its unique key changes. The provenance rebuild
+    command populates new funding-line fields from the tracked parquet corpus.
     """
     Base.metadata.create_all(engine)
     if engine.dialect.name != "sqlite":
@@ -411,6 +420,50 @@ def _ensure_schema_compatibility(engine: Engine) -> None:
     schema = inspect(engine)
     source_columns = {c["name"] for c in schema.get_columns("source_documents")}
     funding_columns = {c["name"] for c in schema.get_columns("funding_lines")}
+    procurement_columns = {
+        c["name"] for c in schema.get_columns("procurement_lines")
+    }
+
+    procurement_additions = {
+        "line_number",
+        "bsa",
+        "bsa_title",
+        "cost_type",
+        "cost_type_title",
+    }
+    procurement_unique = (
+        "bli",
+        "agency",
+        "appropriation",
+        "budget_activity",
+        "line_number",
+        "cost_type",
+        "cost_type_title",
+        "fiscal_year",
+        "funding_type",
+        "pb_cycle",
+        "source_document_id",
+    )
+    existing_procurement_uniques = {
+        tuple(constraint["column_names"])
+        for constraint in schema.get_unique_constraints("procurement_lines")
+    }
+    procurement_needs_rebuild = (
+        not procurement_additions.issubset(procurement_columns)
+        or procurement_unique not in existing_procurement_uniques
+    )
+
+    if procurement_needs_rebuild:
+        with engine.begin() as connection:
+            row_count = connection.scalar(text(
+                "SELECT COUNT(*) FROM procurement_lines"
+            ))
+            if row_count:
+                raise RuntimeError(
+                    "Cannot migrate non-empty procurement_lines table"
+                )
+            ProcurementLine.__table__.drop(connection)
+            ProcurementLine.__table__.create(connection)
 
     source_additions = {
         "source_url": "VARCHAR(2048)",

@@ -9,7 +9,8 @@ from unittest.mock import patch
 import pandas as pd
 import polars as pl
 import openpyxl
-from sqlalchemy import create_engine, func, inspect, select
+from sqlalchemy import create_engine, func, inspect, select, text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 APP_DIR = Path(__file__).resolve().parents[1]
@@ -117,54 +118,170 @@ class FundingRegressionTests(unittest.TestCase):
 
 
 class ProcurementSchemaRegressionTests(unittest.TestCase):
-    def test_compatibility_creates_table_and_round_trips_row(self):
+    def test_compatibility_migrates_and_enforces_row_identity(self):
         engine = create_engine("sqlite:///:memory:")
         Base.metadata.create_all(engine)
+        ProcurementLine.__table__.drop(engine)
+        with engine.begin() as connection:
+            connection.execute(text("""
+                CREATE TABLE procurement_lines (
+                    id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+                    source_document_id INTEGER NOT NULL
+                        REFERENCES source_documents(id),
+                    bli VARCHAR(50) NOT NULL,
+                    line_item_title VARCHAR(500) NOT NULL,
+                    agency VARCHAR(100) NOT NULL,
+                    appropriation VARCHAR(100) NOT NULL,
+                    budget_activity INTEGER,
+                    fiscal_year INTEGER NOT NULL,
+                    funding_type VARCHAR(50) NOT NULL,
+                    amount_thousands FLOAT NOT NULL,
+                    quantity FLOAT,
+                    pb_cycle INTEGER NOT NULL,
+                    content_hash VARCHAR(64) NOT NULL,
+                    ingested_at DATETIME NOT NULL,
+                    UNIQUE (
+                        bli, agency, appropriation, fiscal_year,
+                        funding_type, pb_cycle, source_document_id
+                    )
+                )
+            """))
+
+        _ensure_schema_compatibility(engine)
+        schema = inspect(engine)
+        columns = {
+            column["name"]: column
+            for column in schema.get_columns("procurement_lines")
+        }
+        for column_name in (
+            "line_number",
+            "bsa",
+            "bsa_title",
+            "cost_type",
+            "cost_type_title",
+        ):
+            self.assertIn(column_name, columns)
+            self.assertFalse(columns[column_name]["nullable"])
+
+        expected_unique = (
+            "bli",
+            "agency",
+            "appropriation",
+            "budget_activity",
+            "line_number",
+            "cost_type",
+            "cost_type_title",
+            "fiscal_year",
+            "funding_type",
+            "pb_cycle",
+            "source_document_id",
+        )
+        legacy_unique = (
+            "bli",
+            "agency",
+            "appropriation",
+            "fiscal_year",
+            "funding_type",
+            "pb_cycle",
+            "source_document_id",
+        )
+        unique_constraints = {
+            tuple(constraint["column_names"])
+            for constraint in schema.get_unique_constraints(
+                "procurement_lines"
+            )
+        }
+        self.assertIn(expected_unique, unique_constraints)
+        self.assertNotIn(legacy_unique, unique_constraints)
+
         with Session(engine) as session:
-            session.add(SourceDocument(
+            source = SourceDocument(
                 filename="fy2027_p1.xlsx",
                 document_type="P1",
                 publication_year=2027,
-            ))
-            session.commit()
-
-        ProcurementLine.__table__.drop(engine)
-        tables_before = set(inspect(engine).get_table_names())
-
-        _ensure_schema_compatibility(engine)
-        tables_after = set(inspect(engine).get_table_names())
-        self.assertEqual(
-            tables_after, tables_before | {"procurement_lines"}
-        )
-
-        with Session(engine) as session:
-            source = session.scalar(
-                select(SourceDocument).where(
-                    SourceDocument.filename == "fy2027_p1.xlsx"
-                )
             )
-            self.assertEqual(source.document_type, "P1")
-            session.add(ProcurementLine(
-                source_document_id=source.id,
-                bli="9670A00005",
-                line_item_title="Apache Block IIIA Reman",
-                agency="Army",
-                appropriation="Aircraft Procurement, Army",
+            session.add(source)
+            session.flush()
+
+            common = {
+                "source_document_id": source.id,
+                "bli": "F015EX",
+                "line_item_title": "F-15EX",
+                "agency": "Air Force",
+                "appropriation": "Aircraft Procurement, Air Force",
+                "fiscal_year": 2027,
+                "funding_type": "BY Request",
+                "amount_thousands": 1_250_000.0,
+                "quantity": None,
+                "pb_cycle": 2027,
+            }
+            first = ProcurementLine(
+                **common,
                 budget_activity=1,
-                fiscal_year=2027,
-                funding_type="BY Request",
-                amount_thousands=1_250_000.0,
-                quantity=None,
-                pb_cycle=2027,
+                line_number="7",
+                bsa="03",
+                bsa_title="Tactical Forces",
+                cost_type="A",
+                cost_type_title="Weapon System Cost",
                 content_hash="a" * 64,
-            ))
+            )
+            second = ProcurementLine(
+                **common,
+                budget_activity=1,
+                line_number="7",
+                bsa="03",
+                bsa_title="Tactical Forces",
+                cost_type="B",
+                cost_type_title="Less: Advance Procurement (PY)",
+                content_hash="b" * 64,
+            )
+            third = ProcurementLine(
+                **common,
+                budget_activity=5,
+                line_number="44",
+                bsa="02",
+                bsa_title="Tactical Aircraft",
+                cost_type="A",
+                cost_type_title="Weapon System Cost",
+                content_hash="c" * 64,
+            )
+            session.add_all((first, second, third))
             session.commit()
 
-            stored = session.scalar(select(ProcurementLine))
-            self.assertEqual(stored.bli, "9670A00005")
-            self.assertEqual(stored.amount_thousands, 1_250_000.0)
-            self.assertIsNone(stored.quantity)
-            self.assertIsNotNone(stored.ingested_at)
+            stored = session.scalars(
+                select(ProcurementLine).order_by(ProcurementLine.id)
+            ).all()
+            self.assertEqual(len(stored), 3)
+            self.assertEqual(
+                {
+                    (
+                        row.budget_activity,
+                        row.line_number,
+                        row.cost_type,
+                        row.cost_type_title,
+                    )
+                    for row in stored
+                },
+                {
+                    (1, "7", "A", "Weapon System Cost"),
+                    (1, "7", "B", "Less: Advance Procurement (PY)"),
+                    (5, "44", "A", "Weapon System Cost"),
+                },
+            )
+
+            session.add(ProcurementLine(
+                **common,
+                budget_activity=1,
+                line_number="7",
+                bsa="different-but-not-keyed",
+                bsa_title="Different but not keyed",
+                cost_type="A",
+                cost_type_title="Weapon System Cost",
+                content_hash="d" * 64,
+            ))
+            with self.assertRaises(IntegrityError):
+                session.commit()
+            session.rollback()
         engine.dispose()
 
 
