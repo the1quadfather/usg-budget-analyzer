@@ -2,9 +2,10 @@
 parsing/xlsx_ingest.py
 
 Parses the official DoD Comptroller R-1 spreadsheet (r1_display.xlsx) into the
-same normalized schema as the PDF-based r1_parser. These files exist for
-FY2012-FY2027 (config.XLSX_FIRST_FY) and are authoritative, so no OCR or
-text-layout heuristics are needed for those years.
+same normalized schema as the PDF-based r1_parser, and exposes a typed P-1
+iterator for procurement records. These files exist for FY2012-FY2027
+(config.XLSX_FIRST_FY) and are authoritative, so no OCR or text-layout
+heuristics are needed for those years.
 
 Ground-truth structure (verified against FY2027 r1_display.xlsx):
   - Sheet "Exhibit R-1" holds every column; per-scenario sheets duplicate it
@@ -42,9 +43,11 @@ CLI:
     python parsing/xlsx_ingest.py --file data/raw/comptroller/2027/rdtee/fy2027_r1.xlsx
 """
 
+from dataclasses import dataclass
 import logging
 import re
 from pathlib import Path
+from typing import Iterator, Literal
 
 import openpyxl
 import pandas as pd
@@ -88,6 +91,54 @@ EXTRA_COLUMNS = [
     "organization",
     "py_mandatory_amount", "cy_mandatory_amount", "by_mandatory_amount",
 ]
+
+P1_REQUIRED_HEADERS = (
+    "Account",
+    "Account Title",
+    "Organization",
+    "Budget Activity",
+    "Budget Line Item",
+    "Budget Line Item (BLI) Title",
+    "Add/Non-Add",
+)
+P1_SCENARIO_HEADER_RE = re.compile(
+    r"^FY\s*(\d{4})\s+(.+?)\s+(Quantity|Amount)$", re.IGNORECASE
+)
+P1_MANDATORY_QUALIFIER_RE = re.compile(
+    r"reconcil|mandatory|pl\s*119", re.IGNORECASE
+)
+P1_PRIMARY_QUALIFIERS = {
+    "actual",
+    "actuals",
+    "base",
+    "disc request",
+    "discretionary enacted",
+    "discretionary request",
+    "enacted",
+    "request",
+}
+P1_FUNDING_TYPES = (
+    "PY Actual",
+    "PY Mandatory",
+    "CY Request",
+    "CY Mandatory",
+    "BY Request",
+    "BY Mandatory",
+)
+
+
+@dataclass(frozen=True)
+class P1Record:
+    bli: str
+    line_item_title: str
+    agency: str
+    appropriation: str
+    budget_activity: int | None
+    fiscal_year: int
+    funding_type: str
+    amount_thousands: float
+    quantity: float | None
+    add_non_add: Literal["Add", "Non-Add"]
 
 
 def _to_amount(value) -> float | None:
@@ -284,6 +335,234 @@ class R1XlsxParser:
             "cy_mandatory_amount": amount(fiscal_year - 1, "mandatory"),
             "by_mandatory_amount": amount(fiscal_year, "mandatory"),
         }
+
+
+def _normalise_p1_header(value) -> str:
+    return re.sub(r"\s+", " ", str(value or "")).strip()
+
+
+def _find_p1_sheet(wb):
+    candidates = [n for n in wb.sheetnames if n == "Exhibit P-1"]
+    candidates += [n for n in wb.sheetnames if n not in candidates]
+    best = None
+
+    for name in candidates:
+        ws = wb[name]
+        for row_number, row in enumerate(
+            ws.iter_rows(max_row=5, values_only=True), start=1
+        ):
+            headers = [_normalise_p1_header(value) for value in row]
+            score = sum(header in headers for header in P1_REQUIRED_HEADERS)
+            score += sum(
+                P1_SCENARIO_HEADER_RE.match(header) is not None
+                for header in headers
+            )
+            if best is None or score > best[0]:
+                best = (score, ws, headers, row_number)
+
+    if best is None or best[0] < 3:
+        raise ValueError("Missing required P-1 header: Account")
+    return best[1], best[2], best[3]
+
+
+def _p1_funding_type(
+    fiscal_year: int, qualifier: str, pb_cycle: int
+) -> str | None:
+    prefix = {
+        pb_cycle - 2: "PY",
+        pb_cycle - 1: "CY",
+        pb_cycle: "BY",
+    }.get(fiscal_year)
+    if prefix is None:
+        return None
+
+    qualifier = _normalise_p1_header(qualifier).lower()
+    if P1_MANDATORY_QUALIFIER_RE.search(qualifier):
+        return f"{prefix} Mandatory"
+    if qualifier not in P1_PRIMARY_QUALIFIERS:
+        return None
+    return f"{prefix} Actual" if prefix == "PY" else f"{prefix} Request"
+
+
+def _p1_scenario_specs(pb_cycle: int):
+    return (
+        ("PY Actual", pb_cycle - 2, "Actuals"),
+        ("PY Mandatory", pb_cycle - 2, "Reconciliation"),
+        ("CY Request", pb_cycle - 1, "Discretionary Enacted"),
+        ("CY Mandatory", pb_cycle - 1, "PL 119-21 Spend Plan"),
+        ("BY Request", pb_cycle, "Discretionary Request"),
+        ("BY Mandatory", pb_cycle, "Mandatory"),
+    )
+
+
+def _p1_columns(headers: list[str], pb_cycle: int):
+    columns: dict[str, int] = {}
+    for index, header in enumerate(headers):
+        if header and header not in columns:
+            columns[header] = index
+
+    for header in P1_REQUIRED_HEADERS:
+        if header not in columns:
+            raise ValueError(f"Missing required P-1 header: {header}")
+
+    scenario_columns: dict[str, dict[str, int]] = {}
+    for index, header in enumerate(headers):
+        match = P1_SCENARIO_HEADER_RE.match(header)
+        if match is None:
+            continue
+        fiscal_year = int(match.group(1))
+        funding_type = _p1_funding_type(
+            fiscal_year, match.group(2), pb_cycle
+        )
+        if funding_type is None:
+            continue
+        metric = match.group(3).lower()
+        stream = scenario_columns.setdefault(funding_type, {})
+        if metric in stream:
+            raise ValueError(f"Duplicate P-1 header: {header}")
+        stream[metric] = index
+
+    ordered = []
+    for funding_type, fiscal_year, qualifier in _p1_scenario_specs(pb_cycle):
+        stream = scenario_columns.get(funding_type, {})
+        if not stream and funding_type.endswith(" Mandatory"):
+            continue
+        for metric in ("quantity", "amount"):
+            if metric not in stream:
+                expected = f"FY {fiscal_year} {qualifier} {metric.title()}"
+                raise ValueError(f"Missing required P-1 header: {expected}")
+        ordered.append((
+            funding_type,
+            fiscal_year,
+            stream["quantity"],
+            stream["amount"],
+        ))
+    return columns, ordered
+
+
+def _p1_number(value, header: str, row_number: int) -> float | None:
+    if value is None:
+        return None
+    text = str(value).strip().replace(",", "")
+    if not text or text == "-":
+        return None
+    try:
+        return float(text)
+    except ValueError as exc:
+        raise ValueError(
+            f"Invalid P-1 number in {header} at row {row_number}: {value!r}"
+        ) from exc
+
+
+def _p1_budget_activity(value, row_number: int) -> int | None:
+    number = _p1_number(value, "Budget Activity", row_number)
+    if number is None:
+        return None
+    if not number.is_integer():
+        raise ValueError(
+            f"Invalid P-1 number in Budget Activity at row {row_number}: "
+            f"{value!r}"
+        )
+    return int(number)
+
+
+def _p1_agency(account: str, account_title: str, organization: str) -> str:
+    title = re.sub(r"\s+", " ", account_title).strip().lower()
+    if "national guard and reserve" in title:
+        by_organization = {"A": "Army", "N": "Navy", "F": "Air Force"}
+        if organization.upper() in by_organization:
+            return by_organization[organization.upper()]
+
+    for marker, agency in (
+        ("space force", "Space Force"),
+        ("air force", "Air Force"),
+        ("army", "Army"),
+        ("navy", "Navy"),
+        ("marine corps", "Marine Corps"),
+        ("defense-wide", "Defense-Wide"),
+        ("defense wide", "Defense-Wide"),
+    ):
+        if marker in title:
+            return agency
+
+    suffix_agencies = {
+        "A": "Army",
+        "N": "Navy",
+        "F": "Air Force",
+        "D": "Defense-Wide",
+    }
+    if account and account[-1].upper() in suffix_agencies:
+        return suffix_agencies[account[-1].upper()]
+    return account_title.strip().title()
+
+
+def parse_p1(path: Path, *, pb_cycle: int) -> Iterator[P1Record]:
+    """Yield typed records from an official Comptroller P-1 workbook."""
+    path = Path(path)
+    if not path.exists():
+        raise FileNotFoundError(path)
+
+    workbook = openpyxl.load_workbook(path, read_only=True, data_only=True)
+    try:
+        worksheet, headers, header_row = _find_p1_sheet(workbook)
+        columns, scenarios = _p1_columns(headers, pb_cycle)
+
+        for row_number, row in enumerate(
+            worksheet.iter_rows(min_row=header_row + 1, values_only=True),
+            start=header_row + 1,
+        ):
+            def cell(header: str):
+                index = columns[header]
+                return row[index] if index < len(row) else None
+
+            bli = str(cell("Budget Line Item") or "").strip()
+            if not bli:
+                continue
+
+            add_non_add = str(cell("Add/Non-Add") or "").strip()
+            if add_non_add not in ("Add", "Non-Add"):
+                raise ValueError(
+                    f"Invalid Add/Non-Add value at row {row_number}: "
+                    f"{add_non_add!r}"
+                )
+
+            account = str(cell("Account") or "").strip()
+            appropriation = str(cell("Account Title") or "").strip()
+            organization = str(cell("Organization") or "").strip()
+            budget_activity = _p1_budget_activity(
+                cell("Budget Activity"), row_number
+            )
+            line_item_title = str(
+                cell("Budget Line Item (BLI) Title") or ""
+            ).strip()
+
+            for funding_type, fiscal_year, quantity_col, amount_col in scenarios:
+                amount = _p1_number(
+                    row[amount_col] if amount_col < len(row) else None,
+                    headers[amount_col],
+                    row_number,
+                )
+                if amount is None:
+                    continue
+                quantity = _p1_number(
+                    row[quantity_col] if quantity_col < len(row) else None,
+                    headers[quantity_col],
+                    row_number,
+                )
+                yield P1Record(
+                    bli=bli,
+                    line_item_title=line_item_title,
+                    agency=_p1_agency(account, appropriation, organization),
+                    appropriation=appropriation,
+                    budget_activity=budget_activity,
+                    fiscal_year=fiscal_year,
+                    funding_type=funding_type,
+                    amount_thousands=amount,
+                    quantity=quantity,
+                    add_non_add=add_non_add,
+                )
+    finally:
+        workbook.close()
 
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
