@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import List, Optional
 
 from sqlalchemy import Float, ForeignKey, Integer, String, Text, create_engine, inspect, text
+from sqlalchemy import UniqueConstraint
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import (
     DeclarativeBase,
@@ -104,6 +105,41 @@ class FundingLine(Base):
     program_element: Mapped["ProgramElement"] = relationship(back_populates="funding_lines")
     source_document: Mapped[Optional["SourceDocument"]] = relationship(
         back_populates="funding_lines"
+    )
+
+
+class ProcurementLine(Base):
+    """One P-1 procurement budget-line observation."""
+
+    __tablename__ = "procurement_lines"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    source_document_id: Mapped[int] = mapped_column(
+        ForeignKey("source_documents.id")
+    )
+    bli: Mapped[str] = mapped_column(String(50))
+    line_item_title: Mapped[str] = mapped_column(String(500))
+    agency: Mapped[str] = mapped_column(String(100))
+    appropriation: Mapped[str] = mapped_column(String(100))
+    budget_activity: Mapped[int | None] = mapped_column(Integer)
+    fiscal_year: Mapped[int] = mapped_column(Integer)
+    funding_type: Mapped[str] = mapped_column(String(50))
+    amount_thousands: Mapped[float] = mapped_column(Float)
+    quantity: Mapped[float | None] = mapped_column(Float)
+    pb_cycle: Mapped[int] = mapped_column(Integer)
+    content_hash: Mapped[str] = mapped_column(String(64))
+    ingested_at: Mapped[datetime] = mapped_column(default=_utcnow)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "bli",
+            "agency",
+            "appropriation",
+            "fiscal_year",
+            "funding_type",
+            "pb_cycle",
+            "source_document_id",
+        ),
     )
 
 

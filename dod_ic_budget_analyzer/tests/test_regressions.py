@@ -9,7 +9,7 @@ from unittest.mock import patch
 import pandas as pd
 import polars as pl
 import openpyxl
-from sqlalchemy import create_engine, func, select
+from sqlalchemy import create_engine, func, inspect, select
 from sqlalchemy.orm import Session
 
 APP_DIR = Path(__file__).resolve().parents[1]
@@ -28,7 +28,8 @@ from analysis.user_identity import streamlit_user_id
 from acquisition.dd1416_downloader import metadata_from_url
 from parsing.dd1416_parser import DD1416ParseError, parse_workbook
 from storage.db import (
-    Base, FundingLine, PEExecution, ProgramElement, SourceDocument,
+    Base, FundingLine, PEExecution, ProcurementLine, ProgramElement,
+    SourceDocument, _ensure_schema_compatibility,
 )
 from storage.ingest_r1 import R1Ingestor
 from storage.build_archive import build_archive
@@ -113,6 +114,58 @@ class FundingRegressionTests(unittest.TestCase):
         frame = pd.DataFrame({"fiscal_year": [2020, 2025], "amount": [84.3, 100.0]})
         converted = apply_deflator(frame, amount_column="amount")
         self.assertEqual([round(value, 6) for value in converted], [100.0, 100.0])
+
+
+class ProcurementSchemaRegressionTests(unittest.TestCase):
+    def test_compatibility_creates_table_and_round_trips_row(self):
+        engine = create_engine("sqlite:///:memory:")
+        Base.metadata.create_all(engine)
+        with Session(engine) as session:
+            session.add(SourceDocument(
+                filename="fy2027_p1.xlsx",
+                document_type="P1",
+                publication_year=2027,
+            ))
+            session.commit()
+
+        ProcurementLine.__table__.drop(engine)
+        tables_before = set(inspect(engine).get_table_names())
+
+        _ensure_schema_compatibility(engine)
+        tables_after = set(inspect(engine).get_table_names())
+        self.assertEqual(
+            tables_after, tables_before | {"procurement_lines"}
+        )
+
+        with Session(engine) as session:
+            source = session.scalar(
+                select(SourceDocument).where(
+                    SourceDocument.filename == "fy2027_p1.xlsx"
+                )
+            )
+            self.assertEqual(source.document_type, "P1")
+            session.add(ProcurementLine(
+                source_document_id=source.id,
+                bli="9670A00005",
+                line_item_title="Apache Block IIIA Reman",
+                agency="Army",
+                appropriation="Aircraft Procurement, Army",
+                budget_activity=1,
+                fiscal_year=2027,
+                funding_type="BY Request",
+                amount_thousands=1_250_000.0,
+                quantity=None,
+                pb_cycle=2027,
+                content_hash="a" * 64,
+            ))
+            session.commit()
+
+            stored = session.scalar(select(ProcurementLine))
+            self.assertEqual(stored.bli, "9670A00005")
+            self.assertEqual(stored.amount_thousands, 1_250_000.0)
+            self.assertIsNone(stored.quantity)
+            self.assertIsNotNone(stored.ingested_at)
+        engine.dispose()
 
 
 class IngestionRegressionTests(unittest.TestCase):
