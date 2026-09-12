@@ -401,6 +401,45 @@ def fetch_coverage_stats() -> dict:
     return stats
 
 
+def _tie_out_table(rows) -> pd.DataFrame:
+    return pd.DataFrame([
+        {
+            "FY": row.fiscal_year,
+            "Component": row.agency or row.scope,
+            "Stream": row.stream,
+            "Basis": row.basis,
+            "Ingested $K": row.ingested_k,
+            "Published $K": row.reference_k,
+            "Residual $K": row.residual_k,
+            "Residual %": row.residual_pct,
+            "Status": row.status,
+            "Explanation": row.explanation,
+        }
+        for row in rows
+    ])
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def fetch_r1_tie_out() -> tuple[pd.DataFrame, list[dict]]:
+    from analysis.reconcile import tie_out_r1
+    SessionFactory = init_db_connection()
+    raw_dir = Path(__file__).parent / "data" / "raw" / "comptroller"
+    with SessionFactory() as session:
+        rows = tie_out_r1(session, raw_dir, tolerance_pct=0.5)
+        sources = funding_sources(session)
+    return _tie_out_table(rows), sources
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def fetch_dd1416_tie_out() -> tuple[pd.DataFrame, list[dict]]:
+    from analysis.reconcile import tie_out_dd1416
+    SessionFactory = init_db_connection()
+    with SessionFactory() as session:
+        rows = tie_out_dd1416(session, tolerance_pct=0.5)
+        sources = execution_sources(session) + funding_sources(session)
+    return _tie_out_table(rows), sources
+
+
 @st.cache_data(ttl=3600, show_spinner=False)
 def fetch_funding_sources(
     pe_numbers: tuple[str, ...] = (),
@@ -2162,3 +2201,37 @@ with tab_coverage:
 - **Web-grounded results are yours alone.** "In the News" and "Rhetoric vs. Budget" run against Google Search, and Google's API terms allow those results to be shown only to the person who asked for them. They're saved to your own history, never pooled, and always displayed with Google's Search Suggestions.
 - **Fresh lookups are metered**, so a busy month can't run up an unbounded bill. Anything already analyzed keeps loading normally even after the allowance runs out.
 """)
+
+    st.subheader("Does it tie?")
+
+    st.markdown("#### R-1 budget exhibits")
+    st.caption(
+        "Tolerance: ±0.5%. For PB2027, every DoD-scope row ties to zero "
+        "after excluding non-RDT&E accounts 0130D, 0390D, 3007D, and "
+        "0107D; the published figure is the printed grand total minus those "
+        "accounts. R-1 reference workbooks are not shipped with the app; "
+        "when they are unavailable, rows are marked no_reference."
+    )
+    r1_tie_out, r1_sources = fetch_r1_tie_out()
+    st.dataframe(r1_tie_out, width="stretch", hide_index=True)
+    render_table_downloads(
+        r1_tie_out,
+        name="r1_reconciliation",
+        key="r1-reconciliation",
+        sources=r1_sources,
+    )
+
+    st.markdown("#### DD 1416 execution reports")
+    st.caption(
+        "Tolerance: ±0.5%. The latest DD 1416 enacted total is compared "
+        "with the next-cycle R-1 CY Request; residuals are reported rather "
+        "than hidden."
+    )
+    dd1416_tie_out, dd1416_sources = fetch_dd1416_tie_out()
+    st.dataframe(dd1416_tie_out, width="stretch", hide_index=True)
+    render_table_downloads(
+        dd1416_tie_out,
+        name="dd1416_reconciliation",
+        key="dd1416-reconciliation",
+        sources=dd1416_sources,
+    )
