@@ -273,6 +273,17 @@ P-1 structure, verified against FY2027 `p1_display.xlsx` (926 KB):
 - **Trap:** filter to `Add/Non-Add == "Add"` or you double count.
 - **Trap:** P-1's `Budget Line Item` is a 10-character BLI code (`9670A00005`), **not a
   program element**. There is no key join from RDT&E to procurement. See T10.
+- **Trap [verified 2026-09-12]:** a BLI is **not unique within an account**. The same
+  code prints once per budget activity it draws from (FY2026 `3010F` lists `F015EX`
+  under BA01 line 7, BA05 line 44, BA07 lines 112 and 134), and each of those splits
+  again by `Cost Type` (`A` Weapon System Cost, `B` Less: Advance Procurement (PY),
+  `C` Advance Procurement (CY), shipbuilding completion lines `E`/`G`/`L`/`N`). Cost
+  type `N` repeats under one line number with a different year in its title
+  ("Completion PY Shipbuild for FY 2015", "... FY 2016", ...), so the title is part of
+  the identity. The row identity is `(Account, Line Number, Cost Type, Cost Type
+  Title)`; `(Account, BLI, Budget Activity, BSA, Cost Type, Cost Type Title)` is the
+  equivalent cross-cycle identity. Same lesson as invariant 4: never
+  sum a BLI's lines blindly, and never sum quantities across cost types.
 - P-1 has a `Quantity` column R-1 has no analogue for — unit counts. Keep them; "how many
   did they buy" is a question no free tool answers well.
 

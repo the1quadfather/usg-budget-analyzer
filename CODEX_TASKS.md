@@ -51,7 +51,12 @@ tab-reordering bug reached `main` — it passed the smoke test and nobody clicke
 | T6 Execution UI | shipped | `execution_waterfall()` on the Funding profile tab |
 | T7 Test suite | shipped | `tests/`, `.github/workflows/ci.yml` |
 | Tab-selection bug | fixed 2026-09-09 | stable `st.tabs(default=, key=, on_change=)`; see `AGENTS.md` |
-| T8–T15 | **open** | this document |
+| T8a Reconciliation core | shipped | `analysis/reconcile.py`; commit `9bc1a9d` |
+| T8b Reconciliation panel | reviewed, awaiting merge | branch `codex/t8b`, commit `a305624` |
+| T9a Procurement schema | shipped | `ProcurementLine` in `storage/db.py`; commit `a7acdbf` |
+| T9b P-1 parser | shipped | `parse_p1()` in `parsing/xlsx_ingest.py`; commit `f8a5482` |
+| T9b2 P-1 cost type | **open** | added 2026-09-12 after Codex stopped T9c on a real contradiction |
+| T9c–T15 | **open** | this document |
 
 Database ground truth, queried 2026-09-09:
 
@@ -330,10 +335,113 @@ Map columns **by header text**, never by position (the DD 1416 files taught this
 
 **Verify:** `python -m pytest -q tests/test_p1_parser.py`
 
+### T9b2 — Carry P-1 cost type through the parser and schema
+
+**Files:** `storage/db.py`, `parsing/xlsx_ingest.py`, `tests/test_p1_parser.py`,
+`tests/test_regressions.py`, `tests/fixtures/p1_fy2027_sample.xlsx` (only if the sample
+lacks a BLI with more than one Add cost type).
+**Depends on:** T9a and T9b merged (they are: `a7acdbf`, `f8a5482`).
+
+**Why this task exists [verified 2026-09-12 on fy2026_p1.xlsx and fy2027_p1.xlsx]:**
+the T9a uniqueness key `(bli, agency, appropriation, fiscal_year, funding_type, pb_cycle,
+source_document_id)` collides on real data: FY2026 has 2,589 Add records but 2,393
+distinct keys (116 collide); FY2027 has 2,664 and 2,454 (123 collide). The colliding rows
+differ only in the workbook's `Cost Type` / `Cost Type Title` columns, which the T9a schema
+and the T9b `P1Record` both dropped. They are the components of full funding, not
+duplicates:
+
+| Code | Title | Meaning |
+|---|---|---|
+| `A` | Weapon System Cost | the line's main cost; carries the unit `Quantity` |
+| `B` | Less: Advance Procurement (PY) | negative; money appropriated in an earlier year |
+| `C` | Advance Procurement (CY) | this year's money for future-year units |
+| `E` | Less: Subsequent Full Funding (FY) | negative; shipbuilding |
+| `G` | Less: Future Completion of Shipbuilding (FY) | negative; shipbuilding |
+| `L` | Subsequent Full Funding for FY *yyyy* | shipbuilding completion money |
+| `N` | Completion PY Shipbuild for FY *yyyy* | shipbuilding completion money |
+| blank | blank | 7 Add rows in FY2026 print no cost type |
+
+The `Add` rows for one BLI sum to that BLI's appropriation, so summing is arithmetically
+legal, but it hides advance procurement (the single most useful transition signal for T10)
+and it is **not** legal for quantities: in FY2026, 42 colliding keys carry a quantity on
+more than one cost-type row. Aggregating would double count ships. Keep the rows.
+
+**Second finding, after Codex correctly stopped on the first revision of this task
+[verified 2026-09-12]:** cost type alone leaves 34 (FY2026) and 40 (FY2027) colliding
+Add records, and adding the title still leaves 22 and 28. None of those are duplicate
+amounts. They are the **same BLI code printed under several budget activities and line
+numbers within one account** — the P-1 analogue of the R-1 rule in `CODEX_HANDOFF.md`
+invariant 4. Example, FY2026 account `3010F`, BLI `F015EX` (F-15EX), cost type `A`:
+
+| Budget Activity | Line Number | BSA | BSA Title |
+|---|---|---|---|
+| 01 Combat aircraft | 7 | 03 | Tactical Forces |
+| 05 Modification of inservice aircraft | 44 | 02 | Tactical Aircraft |
+| 07 Aircraft support equipment and facilities | 112 | 02 | Post Production Support |
+| 07 Aircraft support equipment and facilities | 134 | 05 | Other Production Charges |
+
+Grouping Add rows by `(Account, BLI, Cost Type, Cost Type Title)` plus **`Line Number`**
+gives **zero** collisions in both workbooks. Plus `(Budget Activity, BSA)` also gives zero.
+`BSA` alone does not (4 left in each year). `Line Number` is the workbook's own row
+identity within an account, exactly as it is for the R-1 and the committee reports, so it
+goes in the unique key; `BSA` is the stable cross-cycle identity, so it is stored too.
+
+**Do:**
+- `ProcurementLine`: add
+  `line_number: Mapped[str] = mapped_column(String(10))`,
+  `bsa: Mapped[str] = mapped_column(String(10))`,
+  `bsa_title: Mapped[str] = mapped_column(String(200))`,
+  `cost_type: Mapped[str] = mapped_column(String(10))`, and
+  `cost_type_title: Mapped[str] = mapped_column(String(200))`.
+  Replace the `UniqueConstraint` with
+  `("bli", "agency", "appropriation", "budget_activity", "line_number", "cost_type",
+  "cost_type_title", "fiscal_year", "funding_type", "pb_cycle", "source_document_id")`.
+  `cost_type_title` is load-bearing, not decorative: shipbuilding completion lines share
+  cost type `N` under one line number and differ only by the year in the title
+  (FY2026 account `1611N`, line 8: "Completion PY Shipbuild for FY 2015", "... FY 2016",
+  "... FY 2017"). Without the title the key collides on 12 records in each workbook
+  [verified 2026-09-12 by Codex, confirmed against the earlier grouping that included it].
+  Store blanks as `""`, never `NULL`: SQLite treats every `NULL` as distinct inside a
+  UNIQUE constraint, which would silently let duplicates in. `budget_activity` is already
+  nullable; a row with no budget activity must therefore also be rejected by the parser
+  with a `ValueError` naming the row, so the key never contains a `NULL`.
+  `_ensure_schema_compatibility()` must add the five columns to an existing
+  `procurement_lines` table (it is empty everywhere today, so no backfill is needed).
+- `P1Record`: add `line_number: str`, `bsa: str`, `bsa_title: str`, `cost_type: str`,
+  `cost_type_title: str`. `parse_p1()` reads them from the `Line Number`, `BSA`,
+  `Budget SubActivity (BSA) Title`, `Cost Type`, and `Cost Type Title` headers, mapped by
+  header text like the rest. A missing header raises `ValueError` naming it, matching T9b.
+  Keep `line_number` as the printed string (`"7"`, not `7`), matching
+  `PECongressionalAction.line_number`.
+- `content_hash` for a procurement row must include `line_number`, `cost_type`, and
+  `cost_type_title`.
+
+**Definition of done:**
+- Over both real workbooks, grouping Add records by the new key yields zero collisions.
+  Put the check in `tests/test_p1_parser.py` against the fixture, and paste the two-workbook
+  result in the report. This was verified to be zero on 2026-09-12 with the key above; if
+  it is not zero for you, the parser is reading a column wrong — stop and report the rows.
+- The existing T9b parser test still passes with the two new fields added to its expected
+  records.
+- The T9a round-trip regression test inserts three rows: two that differ only in
+  `cost_type`, and one that differs from the first only in `line_number` (same BLI, a
+  different budget activity). All three read back. A fourth insert that repeats a full key
+  raises `IntegrityError`.
+- The fixture contains at least one BLI that appears under two budget activities and one
+  BLI with `A` and `B` cost-type rows; the parser test asserts both by hand-written
+  expected records.
+- No aggregation anywhere. No change to `storage/ingest_p1.py` (it does not exist yet).
+
+**Verify:**
+```bash
+python -m pytest -q tests/test_p1_parser.py tests/test_regressions.py
+python -m pytest -q
+```
+
 ### T9c — P-1 ingest script
 
 **Files:** new `storage/ingest_p1.py`.
-**Depends on:** T9a and T9b merged.
+**Depends on:** T9a, T9b, and T9b2 merged.
 
 **Do:** mirror `storage/ingest_dd1416.py`: parse every workbook first, validate, then one
 write transaction; idempotent per `source_document`; record `source_url`, `retrieved_at`,
@@ -341,8 +449,13 @@ write transaction; idempotent per `source_document`; record `source_url`, `retri
 `python -m storage.ingest_p1 --years 2026 2027 [--download]`.
 
 **Definition of done:**
-- FY2026 and FY2027 ingested; `Add` rows only; quantities preserved.
-- A spot-check row named in the commit message ties to the spreadsheet cell.
+- FY2026 and FY2027 ingested; `Add` rows only; one database row per workbook cost-type
+  row (see T9b2), quantities preserved per row and never summed across cost types.
+- A spot-check row named in the commit message ties to the spreadsheet cell, including
+  its `cost_type`. Also name one BLI with an `A` and a `B` row and show that the sum of its
+  Add rows equals the workbook's total for that BLI and column.
+- `content_hash` is sha256 over the full eleven-column key plus `amount_thousands` and
+  `quantity` (T9b2 deferred hash generation to this task because the ingest did not exist).
 - Re-running the command inserts zero new rows.
 - Row counts for `procurement_lines` and `source_documents` before/after in the commit
   message.
