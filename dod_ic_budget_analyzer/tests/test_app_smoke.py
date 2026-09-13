@@ -40,6 +40,12 @@ def test_default_page_renders_data_not_just_imports() -> None:
     assert not app.exception
     assert len(app.get("vega_lite_chart")) >= 1
     assert len(app.dataframe) >= 1
+    coverage_tab = next(
+        tab for tab in app.get("tab") if tab.label == "Data Coverage"
+    )
+    assert any(
+        "Does it tie" in header.value for header in coverage_tab.subheader
+    )
 
 
 def test_program_finder_rerun_keeps_tab_content_mapped(monkeypatch) -> None:
