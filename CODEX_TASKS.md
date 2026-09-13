@@ -52,11 +52,13 @@ tab-reordering bug reached `main` — it passed the smoke test and nobody clicke
 | T7 Test suite | shipped | `tests/`, `.github/workflows/ci.yml` |
 | Tab-selection bug | fixed 2026-09-09 | stable `st.tabs(default=, key=, on_change=)`; see `AGENTS.md` |
 | T8a Reconciliation core | shipped | `analysis/reconcile.py`; commit `9bc1a9d` |
-| T8b Reconciliation panel | reviewed, awaiting merge | branch `codex/t8b`, commit `a305624` |
+| T8b Reconciliation panel | shipped | "Does it tie?" on Data Coverage; commit `a305624`, merged `4a2ad55` |
 | T9a Procurement schema | shipped | `ProcurementLine` in `storage/db.py`; commit `a7acdbf` |
 | T9b P-1 parser | shipped | `parse_p1()` in `parsing/xlsx_ingest.py`; commit `f8a5482` |
-| T9b2 P-1 cost type | **open** | added 2026-09-12 after Codex stopped T9c on a real contradiction |
-| T9c–T15 | **open** | this document |
+| T9b2 P-1 row identity | shipped | eleven-column key; commit `922e9f3` |
+| T9c P-1 ingest | shipped | `storage/ingest_p1.py`, 5,253 rows, archive rebuilt; commit `8251542` |
+| T9d Procurement coverage | shipped | Data Coverage metric; commit `ce5ee0b` |
+| T10–T15 | **open** | this document |
 
 Database ground truth, queried 2026-09-09:
 
