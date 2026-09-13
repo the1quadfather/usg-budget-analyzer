@@ -367,6 +367,13 @@ def fetch_coverage_stats() -> dict:
             "funding_lines": "SELECT COUNT(*) FROM funding_lines",
             "fy_min": "SELECT MIN(fiscal_year) FROM funding_lines",
             "fy_max": "SELECT MAX(fiscal_year) FROM funding_lines",
+            "procurement_lines": "SELECT COUNT(*) FROM procurement_lines",
+            "procurement_fy_min": (
+                "SELECT MIN(fiscal_year) FROM procurement_lines"
+            ),
+            "procurement_fy_max": (
+                "SELECT MAX(fiscal_year) FROM procurement_lines"
+            ),
             "programs": "SELECT COUNT(*) FROM program_elements",
             "narrative_pes": "SELECT COUNT(DISTINCT pe_number) FROM pe_narratives",
             "narratives": "SELECT COUNT(*) FROM pe_narratives",
@@ -2135,7 +2142,7 @@ with tab_rhetoric:
 with tab_coverage:
     st.header("What this tool covers")
     stats = fetch_coverage_stats()
-    s1, s2, s3, s4 = st.columns(4)
+    s1, s2, s3, s4, s5 = st.columns(5)
     s1.metric("Programs tracked", f"{stats['programs']:,}")
     s2.metric("Funding lines",
               f"{stats['funding_lines']:,}",
@@ -2143,6 +2150,14 @@ with tab_coverage:
               delta_color="off")
     s3.metric("Programs with narratives", f"{stats['narrative_pes']:,}")
     s4.metric("Work line items", f"{stats['accomplishments']:,}")
+    s5.metric("Procurement lines", f"{stats['procurement_lines']:,}")
+    if stats["procurement_fy_min"] and stats["procurement_fy_max"]:
+        st.caption(
+            f"Procurement coverage: FY{stats['procurement_fy_min']}–"
+            f"FY{stats['procurement_fy_max']}."
+        )
+    else:
+        st.caption("Procurement coverage: no fiscal years currently ingested.")
     render_primer(
         "How the numbers relate: program elements, projects, request, "
         "authorization, appropriation, execution, and awards",
