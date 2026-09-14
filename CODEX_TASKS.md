@@ -58,7 +58,7 @@ tab-reordering bug reached `main` — it passed the smoke test and nobody clicke
 | T9b2 P-1 row identity | shipped | eleven-column key; commit `922e9f3` |
 | T9c P-1 ingest | shipped | `storage/ingest_p1.py`, 5,253 rows, archive rebuilt; commit `8251542` |
 | T9d Procurement coverage | shipped | Data Coverage metric; commit `ce5ee0b` |
-| T10–T15 | **open** | this document |
+| T10–T15 | **open** | this document. Next: T11a (spec re-verified 2026-09-14), then T13a in parallel; T10a is research, not a Codex task |
 
 Database ground truth, queried 2026-09-09:
 
@@ -556,6 +556,8 @@ clicked through in a browser.
 
 **Files:** `storage/db.py`, new `analysis/lineage.py`, new `tests/test_lineage.py`.
 **Depends on:** nothing.
+**Spec re-verified against the shipped database 2026-09-14** (see "Verified facts" below;
+the earlier draft's "7-character PE" wording was wrong).
 
 ```python
 Relation = Literal["renumbered", "split", "merged", "transferred"]
@@ -579,14 +581,72 @@ class LineageEdge:  # same fields as the model, minus id/ingested_at
 def detect_ba_renumbering(session) -> list[LineageEdge]: ...
 ```
 
-Start with the most common and most detectable case: the same 7-character PE with digits
-3–4 changed (a budget-activity move), same agency, same or near-identical title, where one
-series ends the year before the other begins.
+Model conventions: copy `PEExecution` — `content_hash` is `String(64)`, `unique=True`,
+indexed; `ingested_at` defaults to `_utcnow`. `content_hash` is sha256 over
+`predecessor_pe | predecessor_agency | successor_pe | successor_agency | relation | method`
+joined with `|`. `_ensure_schema_compatibility()` already calls
+`Base.metadata.create_all`, so a new table needs no migration code. No ingest in this
+task; the detector only returns edges.
 
-**Definition of done:** the detector finds at least one known case (name it in the commit
-message with both PE numbers and the FY); a unit test builds a synthetic pair and asserts
-one `renumbered` edge with `method="ba_renumber"`; **no edge is inferred from a funding
-drop alone**.
+**Verified facts (query the DB yourself if in doubt):**
+
+- `program_elements.pe_number` is 8, 9, or 10 characters: seven digits followed by a 1–3
+  character suffix (`0602115A`, `0601384BP`, `0603941D8Z`). Five rows have a blank
+  `pe_number` (classified aggregates) and eight rows have `agency = "Unknown"`; exclude
+  both. Digits 3–4 are the budget activity. "Same PE except the budget activity" means
+  positions 1–2 and 5–end are identical, positions 3–4 differ, and `agency` is equal.
+- `funding_lines` has no `pe_number`; join through `program_element_id`. Use only
+  `funding_type IN ('PY Actual','CY Request','BY Request')` with a non-null, nonzero
+  `amount_thousands` when deciding whether a PE "carries money" in a fiscal year.
+- **The digit rule alone is noise.** It yields 502 directed pairs, 15 of which abut in
+  time, and only two of those are real. A title gate is mandatory:
+  `rapidfuzz.fuzz.token_set_ratio(normalize_program_name(a), normalize_program_name(b))`
+  (from `matching.normalizer`) scores the two real cases at 100 and every false pair
+  seen at or below 40. Use a threshold of 85 and make it a named module constant.
+- **Abutment must be vintage-aware.** The known case below carries FY2026 under *both*
+  PE numbers: `0609345A` has FY2026 as `BY Request` in `pb_cycle=2026`, and `0605345A`
+  has FY2026 as `CY Request` in `pb_cycle=2027`. Define `last_fy(pred)` as the greatest
+  funded FY across all vintages and `first_fy(succ)` as the smallest. Accept
+  `first_fy(succ) - last_fy(pred)` of 0 only when the predecessor's observation of that
+  FY comes from an older `pb_cycle` than the successor's; accept 1 unconditionally;
+  accept 2 at reduced confidence (the DB has every `pb_cycle` 2006–2027, so a two-year
+  gap means a year genuinely went unreported). Reject anything else. The predecessor must
+  carry no money in any FY after `first_fy(succ)`.
+- Confidence: 1.0 for gap 0 or 1 with title score 100; subtract 0.1 for gap 2; scale
+  down linearly toward 0.6 as the title score falls to 85. Document the formula in the
+  docstring.
+- `first_fy_after` = `first_fy(succ)`. `evidence_source = "funding_series"`,
+  `evidence_text = None`, `method = "ba_renumber"`, `relation = "renumbered"`.
+
+**Known cases the detector must find** (name both in the commit message):
+
+| Predecessor | Successor | Agency | `first_fy_after` | Note |
+|---|---|---|---|---|
+| `0609345A` | `0605345A` | Army | 2026 | "Unmanned Aerial Systems Launched Effects": BA 9 software pilot → BA 5; gap 0 across vintages |
+| `0308609V` | `0307609V` | Defense-Wide | 2023 | "National Industrial Security Systems (NISS)": gap 2, reduced confidence |
+
+**Definition of done:** `detect_ba_renumbering(session)` on the shipped database returns
+both cases above and **no more than five edges in total** (print the full list in the
+report; if a third edge appears, say whether you believe it and why); a unit test on an
+in-memory SQLite session (pattern: `tests/test_reconcile.py::setUp`) builds one synthetic
+abutting pair with matching titles and asserts exactly one `renumbered` edge with
+`method="ba_renumber"`; a second test builds a pair that abuts but whose titles score
+below 85 and asserts zero edges; a third test builds a PE whose funding simply stops,
+with no successor, and asserts zero edges — **no edge is ever inferred from a funding
+drop alone**. `python -m pytest -q` passes. Do not touch `app.py`.
+
+**Verify:**
+```bash
+python -m pytest -q
+python - <<'PY'
+from storage.db import get_engine, get_session_factory
+from analysis.lineage import detect_ba_renumbering
+session = get_session_factory(get_engine("sqlite:///data/processed/usg_budgets.db"))()
+for edge in detect_ba_renumbering(session):
+    print(edge)
+PY
+```
+(Run from `dod_ic_budget_analyzer/`; `app.py` builds the same URI from its own path.)
 
 ### T11b — Narrative transfer language
 
