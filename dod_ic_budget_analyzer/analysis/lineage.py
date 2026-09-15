@@ -1,23 +1,86 @@
-"""Detect evidence-backed lineage relationships between program elements."""
+r"""Detect evidence-backed lineage relationships between program elements.
+
+Narrative detection composes this regex set. Prose matching is case-insensitive;
+captured PE numbers are revalidated case-sensitively against the listed shape:
+
+* Sentence split: ``(?<=\.)[ \t]+|[\r\n]+``.
+* PE reference: ``(?:\bPE\b|\bProgram\s+Element(?:\s*\(\s*PE\s*\))?)``
+  followed by ``\s*[:#,-]?\s*\(?\s*(?P<pe>\d{7}[A-Z0-9]{1,3})\b``.
+* Verb gap: ``(?:(?!\b(?:realigned|transferred|moved|consolidated)\b).)*?``.
+* Reference gap: ``(?:(?!\b(?:from|to|into|under)\b).)*?``.
+* From direction: ``\b(?:realigned|transferred|moved|consolidated)\b``, verb
+  gap, ``\bfrom\b``, reference gap, then a PE reference.
+* To direction: ``\b(?:realigned|transferred|moved)\b``, verb gap,
+  ``\b(?:to|into)\b``, reference gap, then a PE reference.
+* Consolidation destination: ``\bconsolidated\b``, verb gap,
+  ``\b(?:into|under)\b``, reference gap, then a PE reference.
+* Fiscal year: ``\bFY\s?(?P<year>20\d{2}|\d{2})\b``.
+"""
 
 from collections import defaultdict
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from hashlib import sha256
 from itertools import permutations
+import re
 from typing import Literal
 
 from rapidfuzz import fuzz
-from sqlalchemy import select
+from sqlalchemy import literal, select, union_all
 from sqlalchemy.orm import Session
 
 from matching.normalizer import normalize_program_name
-from storage.db import FundingLine, ProgramElement
+from storage.db import FundingLine, PEAccomplishment, PENarrative, ProgramElement
 
 
 Relation = Literal["renumbered", "split", "merged", "transferred"]
 
 TITLE_SIMILARITY_THRESHOLD = 85.0
 _ELIGIBLE_FUNDING_TYPES = ("PY Actual", "CY Request", "BY Request")
+
+_SENTENCE_SPLIT_RE = re.compile(r"(?<=\.)[ \t]+|[\r\n]+")
+_PE_NUMBER_PATTERN = r"\d{7}[A-Z0-9]{1,3}"
+_PE_NUMBER_RE = re.compile(rf"{_PE_NUMBER_PATTERN}")
+_PE_REFERENCE_PATTERN = (
+    r"(?:\bPE\b|\bProgram\s+Element(?:\s*\(\s*PE\s*\))?)"
+    rf"\s*[:#,-]?\s*\(?\s*(?P<pe>{_PE_NUMBER_PATTERN})\b"
+)
+_VERB_GAP_PATTERN = (
+    r"(?:(?!\b(?:realigned|transferred|moved|consolidated)\b).)*?"
+)
+_REFERENCE_GAP_PATTERN = r"(?:(?!\b(?:from|to|into|under)\b).)*?"
+_DIRECTION_PATTERNS = (
+    (
+        "from",
+        re.compile(
+            rf"\b(?:realigned|transferred|moved|consolidated)\b"
+            rf"{_VERB_GAP_PATTERN}\bfrom\b"
+            rf"{_REFERENCE_GAP_PATTERN}{_PE_REFERENCE_PATTERN}",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "to",
+        re.compile(
+            rf"\b(?:realigned|transferred|moved)\b"
+            rf"{_VERB_GAP_PATTERN}\b(?:to|into)\b"
+            rf"{_REFERENCE_GAP_PATTERN}{_PE_REFERENCE_PATTERN}",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "to",
+        re.compile(
+            rf"\bconsolidated\b{_VERB_GAP_PATTERN}\b(?:into|under)\b"
+            rf"{_REFERENCE_GAP_PATTERN}{_PE_REFERENCE_PATTERN}",
+            re.IGNORECASE,
+        ),
+    ),
+)
+_FISCAL_YEAR_RE = re.compile(
+    r"\bFY\s?(?P<year>20\d{2}|\d{2})\b",
+    re.IGNORECASE,
+)
 
 
 @dataclass(frozen=True)
@@ -219,3 +282,130 @@ def detect_ba_renumbering(session: Session) -> list[LineageEdge]:
             edge.successor_agency,
         ),
     )
+
+
+def _iter_narrative_rows(
+    session: Session,
+) -> Iterator[tuple[str, int, str, str, int, str]]:
+    narrative_rows = select(
+        PENarrative.source_file.label("source_file"),
+        PENarrative.id.label("row_id"),
+        literal(0).label("table_order"),
+        PENarrative.pe_number.label("pe_number"),
+        PENarrative.agency.label("agency"),
+        PENarrative.fiscal_year.label("fiscal_year"),
+        PENarrative.description.label("body"),
+    )
+    accomplishment_rows = select(
+        PEAccomplishment.source_file.label("source_file"),
+        PEAccomplishment.id.label("row_id"),
+        literal(1).label("table_order"),
+        PEAccomplishment.pe_number.label("pe_number"),
+        PEAccomplishment.agency.label("agency"),
+        PEAccomplishment.fiscal_year.label("fiscal_year"),
+        PEAccomplishment.text.label("body"),
+    )
+    rows = union_all(narrative_rows, accomplishment_rows).subquery()
+    statement = select(
+        rows.c.source_file,
+        rows.c.row_id,
+        rows.c.pe_number,
+        rows.c.agency,
+        rows.c.fiscal_year,
+        rows.c.body,
+    ).order_by(rows.c.source_file, rows.c.row_id, rows.c.table_order)
+
+    for row in session.execute(statement).yield_per(1000):
+        yield tuple(row)
+
+
+def _iter_sentences(text: str) -> Iterator[str]:
+    for sentence in _SENTENCE_SPLIT_RE.split(text):
+        sentence = sentence.strip()
+        if sentence:
+            yield sentence
+
+
+def _iter_directional_references(sentence: str) -> Iterator[tuple[str, str]]:
+    matches: list[tuple[int, int, str, str]] = []
+    for pattern_index, (direction, pattern) in enumerate(_DIRECTION_PATTERNS):
+        for match in pattern.finditer(sentence):
+            pe_number = match.group("pe")
+            if _PE_NUMBER_RE.fullmatch(pe_number) is None:
+                continue
+            matches.append((
+                match.start(),
+                pattern_index,
+                direction,
+                pe_number,
+            ))
+    for _, _, direction, pe_number in sorted(matches):
+        yield direction, pe_number
+
+
+def _first_fiscal_year(sentence: str, row_fiscal_year: int) -> tuple[int, float]:
+    match = _FISCAL_YEAR_RE.search(sentence)
+    if match is None:
+        return row_fiscal_year, 0.7
+    year = match.group("year")
+    if len(year) == 2:
+        return 2000 + int(year), 0.9
+    return int(year), 0.9
+
+
+def detect_narrative_transfers(session: Session) -> list[LineageEdge]:
+    """Find PE transfers stated explicitly in R-2 narrative sentences.
+
+    ``from`` references make the cited PE the predecessor; ``to``, ``into``,
+    and ``under`` references make the row PE the predecessor. A component name
+    in prose does not override the stored row agency: both endpoints retain the
+    row's agency until cross-component attribution is implemented separately.
+    Evidence is deduplicated by T11a's lineage identity hash in ``source_file``,
+    row-id order.
+    """
+    edges_by_hash: dict[str, LineageEdge] = {}
+    for source_file, _, row_pe, agency, row_fiscal_year, body in (
+        _iter_narrative_rows(session)
+    ):
+        if _PE_NUMBER_RE.fullmatch(row_pe) is None:
+            continue
+        for sentence in _iter_sentences(body):
+            first_fy_after, confidence = _first_fiscal_year(
+                sentence,
+                row_fiscal_year,
+            )
+            for direction, cited_pe in _iter_directional_references(sentence):
+                if cited_pe == row_pe:
+                    continue
+                if direction == "from":
+                    predecessor_pe, successor_pe = cited_pe, row_pe
+                else:
+                    predecessor_pe, successor_pe = row_pe, cited_pe
+
+                relation: Relation = "transferred"
+                method = "narrative"
+                content_hash = _content_hash(
+                    predecessor_pe,
+                    agency,
+                    successor_pe,
+                    agency,
+                    relation,
+                    method,
+                )
+                if content_hash in edges_by_hash:
+                    continue
+                edges_by_hash[content_hash] = LineageEdge(
+                    predecessor_pe=predecessor_pe,
+                    predecessor_agency=agency,
+                    successor_pe=successor_pe,
+                    successor_agency=agency,
+                    relation=relation,
+                    first_fy_after=first_fy_after,
+                    evidence_text=sentence,
+                    evidence_source=source_file,
+                    confidence=confidence,
+                    method=method,
+                    content_hash=content_hash,
+                )
+
+    return list(edges_by_hash.values())
