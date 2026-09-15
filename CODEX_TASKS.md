@@ -60,7 +60,8 @@ tab-reordering bug reached `main` — it passed the smoke test and nobody clicke
 | T9d Procurement coverage | shipped | Data Coverage metric; commit `ce5ee0b` |
 | T11a Lineage schema + BA renumbering | shipped | `PELineage`, `analysis/lineage.py::detect_ba_renumbering`; commit `9dcbc34`, merged `783d80e` |
 | T11b Narrative transfer language | shipped | `analysis/lineage.py::detect_narrative_transfers`, 431 edges on the shipped database; commit `8eb6195`, merged `9eec75b` |
-| T10, T11c–T15 | **open** | this document. Next: T13a (spec verified 2026-09-15), then T11c; T10a is research, not a Codex task |
+| T13a Change feed core | shipped | `analysis/changefeed.py`; PB2026 vs PB2027 yields 483 swings, 49 terminations, 44 new starts; commit `15edd75` + fixup `a656ca6`, merged `6722bc9` |
+| T10, T11c–T12, T13b–T15 | **open** | this document. Next: T11c, then T13b; T10a is research, not a Codex task |
 
 Database ground truth, queried 2026-09-09:
 
@@ -914,7 +915,7 @@ PY
 
 **Files:** `app.py` (Budget Trends tab, new section "What changed"), new
 `scripts/export_changefeed.py` writing `release/changefeed.json`.
-**Depends on:** T13a merged.
+**Depends on:** T13a merged (it is: merged `6722bc9` on 2026-09-15).
 
 **Definition of done:** the section takes two `pb_cycle` selectboxes and lists events with
 working permalinks; the JSON export validates against the dataclass fields; clicked
