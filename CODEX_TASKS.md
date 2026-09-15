@@ -59,7 +59,8 @@ tab-reordering bug reached `main` — it passed the smoke test and nobody clicke
 | T9c P-1 ingest | shipped | `storage/ingest_p1.py`, 5,253 rows, archive rebuilt; commit `8251542` |
 | T9d Procurement coverage | shipped | Data Coverage metric; commit `ce5ee0b` |
 | T11a Lineage schema + BA renumbering | shipped | `PELineage`, `analysis/lineage.py::detect_ba_renumbering`; commit `9dcbc34`, merged `783d80e` |
-| T10, T11b–T15 | **open** | this document. Next: T11b, then T13a (specs verified 2026-09-15); T10a is research, not a Codex task |
+| T11b Narrative transfer language | shipped | `analysis/lineage.py::detect_narrative_transfers`, 431 edges on the shipped database; commit `8eb6195`, merged `9eec75b` |
+| T10, T11c–T15 | **open** | this document. Next: T13a (spec verified 2026-09-15), then T11c; T10a is research, not a Codex task |
 
 Database ground truth, queried 2026-09-09:
 
@@ -742,7 +743,7 @@ PY
 
 **Files:** new `analysis/lineage_golden.json`, new `analysis/lineage_eval.py`, new
 `storage/ingest_lineage.py`.
-**Depends on:** T11b merged.
+**Depends on:** T11b merged (it is: commit `8eb6195`, merged `9eec75b` on 2026-09-15).
 
 **Definition of done:** ten hand-verified cases with evidence URLs; ingest writes edges
 from both detectors idempotently; eval prints precision and recall against the golden set;
