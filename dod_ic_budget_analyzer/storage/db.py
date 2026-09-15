@@ -185,6 +185,26 @@ class PEExecution(Base):
     source_document: Mapped[Optional["SourceDocument"]] = relationship()
 
 
+class PELineage(Base):
+    """Evidence-backed relationship between predecessor and successor PEs."""
+
+    __tablename__ = "pe_lineage"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    predecessor_pe: Mapped[str] = mapped_column(String(50))
+    predecessor_agency: Mapped[str] = mapped_column(String(100))
+    successor_pe: Mapped[str] = mapped_column(String(50))
+    successor_agency: Mapped[str] = mapped_column(String(100))
+    relation: Mapped[str] = mapped_column(String(50))
+    first_fy_after: Mapped[int] = mapped_column(Integer)
+    evidence_text: Mapped[Optional[str]] = mapped_column(Text)
+    evidence_source: Mapped[Optional[str]] = mapped_column(String(255))
+    confidence: Mapped[float] = mapped_column(Float)
+    method: Mapped[str] = mapped_column(String(50))
+    content_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    ingested_at: Mapped[datetime] = mapped_column(default=_utcnow)
+
+
 class PENarrative(Base):
     """
     R-2 justification narrative for a PE (project_number == "" for the
