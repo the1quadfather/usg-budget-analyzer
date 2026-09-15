@@ -743,12 +743,114 @@ PY
 ### T11c — Lineage golden set, ingest, and eval
 
 **Files:** new `analysis/lineage_golden.json`, new `analysis/lineage_eval.py`, new
-`storage/ingest_lineage.py`.
+`storage/ingest_lineage.py`, new `tests/test_ingest_lineage.py`,
+`data/processed/usg_budgets.db.gz` (rebuilt), `CODEX_HANDOFF.md` §1 (row count).
 **Depends on:** T11b merged (it is: commit `8eb6195`, merged `9eec75b` on 2026-09-15).
+**Revised 2026-09-15** after Codex correctly stopped: the first version was a bare
+definition of done. It named no file for the archive, no golden-set schema, and no
+evaluation universe. All three are specified below. The ignored working `.db` is mutated
+by the ingest, as every ingest task does; that is expected, not a contradiction.
 
-**Definition of done:** ten hand-verified cases with evidence URLs; ingest writes edges
-from both detectors idempotently; eval prints precision and recall against the golden set;
-`.db.gz` rebuilt and committed with row counts in the message.
+**Verified facts (shipped database, 2026-09-15):**
+
+- `pe_lineage` exists in `storage/db.py` (T11a) and has **0 rows**. The two detectors
+  return 2 edges (`detect_ba_renumbering`, `method="ba_renumber"`,
+  `evidence_source="funding_series"`, `evidence_text=None`) and 431 edges
+  (`detect_narrative_transfers`, `method="narrative"`), all 431 with distinct
+  `(predecessor_pe, successor_pe)` pairs; 338 at confidence 0.9, 93 at 0.7.
+- Narrative `evidence_source` is the R-2 book filename the row came from
+  (`af_fy2019_..._Vol_II_FY19.pdf`, `PB_2026_RDTE_VOL_5.xml`, 173 distinct). **None of
+  them is registered in `source_documents`** (0 of 431 match `filename`; that table
+  holds only `R1`, `DD1416`, `P1`), so no URL is recoverable from the database for a
+  narrative edge. The service budget sites were also unreachable from this machine on
+  2026-09-15 (Air Force TLS failure, Army 403, Navy WAF reject), so the URLs could not
+  be hand-verified either. Do not invent them: `evidence_url` is `null` for narrative
+  cases, and the verbatim quote plus the book filename is the evidence. The two
+  funding-series cases carry the R-1 `source_documents.source_url` that is in the
+  database. Registering R-2 books in `source_documents` is a separate task, not T11c.
+- Cross-component transfers record the row's agency on both sides (T11b docstring). The
+  Air Force to Space Force edge below therefore has `successor_agency="Air Force"` in
+  detector output even though the true successor is Space Force; the eval matches on PE
+  numbers only, and the golden case records the true agency with a note.
+- One confirmed false positive exists: in the PE 0603030F narrative (AF FY2021 Vol I),
+  the sentence "the entirety of PE 0603112F ... will be transferred to PE 0603030F ...
+  with the exception of the Pervasive and Affordable Metals Technologies effort which
+  will be transferred to PE 0602102F" yields `0603030F -> 0602102F`, but the predecessor
+  is 0603112F. The two true edges (`0603112F -> 0603030F`, `0603112F -> 0602102F`) are
+  detected from PE 0603112F's own narrative. Fixing the detector is T11b follow-up, not
+  T11c; the golden set records the false positive so the eval measures it.
+
+**Golden set** (`analysis/lineage_golden.json`): a list of cases, each
+`{"predecessor_pe", "predecessor_agency", "successor_pe", "successor_agency", "relation",
+"first_fy_after", "label", "method", "evidence_quote", "evidence_source", "evidence_url",
+"note"}`. `label` is `"edge"` or `"no_edge"`. `evidence_quote` is verbatim from the
+database row (copy it from `detect_narrative_transfers` output; do not retype it).
+Ten positives and two negatives, all hand-verified 2026-09-15 against the row text:
+
+| # | Predecessor | Successor | FY | Method | Source | Note |
+|---|---|---|---|---|---|---|
+| 1 | 0603216F (AF) | 0603032F (AF) | 2021 | narrative | `af_fy2021_FY21_Air_Force_Research_Development_Test_and_Evaluation_Vol_I.pdf` | Skyborg Vanguard, "consolidated and transferred in FY 2021 from ... to" |
+| 2 | 0306250F (AF) | 0208099F (AF) | 2019 | narrative | `af_fy2019_Air_Force_Research_Development_Test_and_Evaluation_Vol_II_FY19.pdf` | Unified Platform "transferred from"; quote begins with exhibit-header boilerplate, keep it verbatim |
+| 3 | 0603830F (AF) | 1206730F (AF) | 2018 | narrative | same Vol II FY19 book | Space Security and Defense Program, new Major Force Program for Space |
+| 4 | 0602705A (Army) | 0602146A (Army) | 2020 | narrative | `army_fy2020_02_RDTE_-_Vol_1_-_Budget_Activity_2.pdf` | "realigned from PE 0602705A ... in FY20"; sentence names three source PEs, this is the first |
+| 5 | 0602184A (Army) | 0602143A (Army) | 2027 | narrative | `army_fy2027_RDTE_-_Vol_1_-_Budget_Activity_2.pdf` | "Funding realigned from Program Element (PE) 0602184A" |
+| 6 | 0603758N (Navy) | 0603382N (Navy) | 2027 | narrative | `navy_fy2027_RDTEN_BA4_Book.pdf` | TANG "moved from PE 0603758N ... to PE 0603382N ... effective FY 2027" |
+| 7 | 1206601F (AF) | 1206601SF (**Space Force**) | 2021 | narrative | AF FY2021 Vol I | Appropriation 3600 to 3620; detector records Air Force on both sides |
+| 8 | 0603112F (AF) | 0603030F (AF) | 2021 | narrative | AF FY2021 Vol I | Advanced Materials for Weapon Systems into AF Foundational Development/Demos |
+| 9 | 0308609V (DW) | 0307609V (DW) | 2023 | ba_renumber | `funding_series`; `evidence_url` = `https://comptroller.war.gov/budgetmaterials/budget2023.aspx` | NISS Software Pilot Program, BA 8 to BA 7, confidence 0.9 |
+| 10 | 0609345A (Army) | 0605345A (Army) | 2026 | ba_renumber | `funding_series`; `evidence_url` = `https://comptroller.war.gov/budgetmaterials/budget2026.aspx` | UAS Launched Effects, BA 9 to BA 5, confidence 1.0 |
+| N1 | 0603030F (AF) | 0602102F (AF) | 2021 | narrative | AF FY2021 Vol I | **no_edge**: the false positive described above |
+| N2 | 0602144A (Army) | 0602144A (Army) | 2027 | narrative | any | **no_edge**: self-reference; a detector must never emit X -> X |
+
+`relation` is `"transferred"` for narrative cases and `"renumbered"` for the two
+funding-series cases. Fill `first_fy_after` from the table.
+
+**Eval** (`analysis/lineage_eval.py`, pattern `analysis/linker_eval.py`): run both
+detectors against the live database, match on `(predecessor_pe, successor_pe)` only, and
+print one line per golden case (PASS/FAIL, and for positives whether `first_fy_after`
+matched), then:
+
+- recall = positives detected / positives;
+- precision = detected edges labelled `edge` / detected edges whose pair is in the golden
+  universe (positives plus negatives). Edges outside the universe are **unlabelled, not
+  scored**; print their count so coverage is stated, never implied;
+- exit code 1 if recall < 1.0, else 0. Precision is printed, not gated.
+
+Expected on the shipped database: recall 10/10, precision 10/11 (N1 is emitted, N2 is
+not), 422 unlabelled edges. State these numbers in the module docstring.
+
+**Ingest** (`storage/ingest_lineage.py`, pattern `storage/ingest_p1.py` for `main()`):
+`ingest_lineage(session) -> dict[str, int]` deletes every `pe_lineage` row whose `method`
+is `ba_renumber` or `narrative`, inserts the current detector output, commits, and returns
+`{"ba_renumber": n, "narrative": n, "total": n}`. `pe_lineage` is fully derived from
+other tables, so replace-by-method is the idempotency rule: two consecutive runs leave an
+identical row set and identical counts. `main()` takes `--database` (default
+`config.PROCESSED_DIR / "usg_budgets.db"`), prints row counts before and after, and does
+not build the archive itself.
+
+**Test** (`tests/test_ingest_lineage.py`, pattern `tests/test_reconcile.py::setUp` with
+an in-memory session): load `tests/fixtures/lineage_sentences.json` rows as T11b's tests
+do, run `ingest_lineage` twice, and assert the row count is 3 both times and the set of
+`content_hash` values is unchanged.
+
+**Definition of done:** the golden file holds exactly the twelve cases above with
+verbatim quotes; `python analysis/lineage_eval.py` prints the expected numbers and exits
+0; `ingest_lineage` is idempotent by test and by two real runs (433 rows after each);
+`python -m analysis.ai_budget --reset-runtime` then `python -m storage.build_archive`
+run, the `.db.gz` committed, and the commit message states `pe_lineage` 0 -> 433;
+`CODEX_HANDOFF.md` §1 "Tables" row gains the `pe_lineage` row count;
+`python -m pytest -q` passes. Do not touch `app.py` or `analysis/lineage.py`.
+
+**Verify:**
+```bash
+python -m pytest -q
+python analysis/lineage_eval.py
+python -m storage.ingest_lineage
+python -m storage.ingest_lineage            # second run: identical counts
+sqlite3 data/processed/usg_budgets.db "SELECT method, COUNT(*) FROM pe_lineage GROUP BY 1;"
+python -m analysis.ai_budget --reset-runtime
+python -m storage.build_archive
+```
 
 ### T11d — Lineage in the funding chart
 
