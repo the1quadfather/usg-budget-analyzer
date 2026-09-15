@@ -1,0 +1,71 @@
+[
+  {
+    "pe_number": "0603176BR",
+    "agency": "Defense-Wide",
+    "fiscal_year": 2026,
+    "source_file": "PB_2026_RDTE_VOL_5.xml",
+    "text": "Funds in program element 0603176BR Project RR were realigned to Project RR in PE 0603160BR during FY 2025 to better integrate this activity administratively into the RDT&E portfolio.",
+    "expect_edges": [
+      {
+        "predecessor_pe": "0603176BR",
+        "successor_pe": "0603160BR",
+        "first_fy_after": 2025,
+        "confidence": 0.9
+      }
+    ]
+  },
+  {
+    "pe_number": "0602146A",
+    "agency": "Army",
+    "fiscal_year": 2027,
+    "source_file": "army_fy2027_RDTE_-_Vol_1_-_Budget_Activity_2.pdf",
+    "text": "This effort was consolidated from PE 0602182A (C3I Applied Research) / Project CX3 (Intelligent Env Battlefield Awareness Apl Tech) to combine advanced terrain modeling and intel capabilities into a project.",
+    "expect_edges": [
+      {
+        "predecessor_pe": "0602182A",
+        "successor_pe": "0602146A",
+        "first_fy_after": 2027,
+        "confidence": 0.7
+      }
+    ]
+  },
+  {
+    "pe_number": "0604659N",
+    "agency": "Navy",
+    "fiscal_year": 2027,
+    "source_file": "navy_fy2027_RDTEN_BA4_Book.pdf",
+    "text": "SLCM funds were transferred to new PE 0105519N starting in FY 2026.",
+    "expect_edges": [
+      {
+        "predecessor_pe": "0604659N",
+        "successor_pe": "0105519N",
+        "first_fy_after": 2026,
+        "confidence": 0.9
+      }
+    ]
+  },
+  {
+    "pe_number": "0602144A",
+    "agency": "Army",
+    "fiscal_year": 2027,
+    "source_file": "army_fy2027_RDTE_-_Vol_1_-_Budget_Activity_2.pdf",
+    "text": "This effort was consolidated from PE 0602144A (Ground Technology) / Project DI7 to combine related work.",
+    "expect_edges": []
+  },
+  {
+    "pe_number": "0605001A",
+    "agency": "Army",
+    "fiscal_year": 2025,
+    "source_file": "army_fy2025_contractor_transfer.pdf",
+    "text": "Funds were transferred to the contractor in FY 2025 to accelerate integration.",
+    "expect_edges": []
+  },
+  {
+    "pe_number": "0605002A",
+    "agency": "Army",
+    "fiscal_year": 2025,
+    "source_file": "army_fy2025_close_combat.pdf",
+    "text": "Project 016, Close Combat Lethality, moved to the Soldier Lethality Cross Functional Team.",
+    "expect_edges": []
+  }
+]
