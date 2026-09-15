@@ -798,6 +798,9 @@ human action.
 **Files:** new `analysis/changefeed.py`, new `tests/test_changefeed.py`.
 **Depends on:** nothing (T4's `pb_cycle` already exists).
 **Spec verified against the shipped database 2026-09-15.**
+**Revised 2026-09-15** after Codex correctly stopped: the first version keyed
+reprogramming rows on `(pe_number, agency, fy_start, line_number)`, which is not unique
+per report date. The key and the collision policy below replace it.
 
 ```python
 Kind = Literal["new_start", "termination", "swing", "committee_action", "reprogramming"]
@@ -846,7 +849,7 @@ def new_reprogramming(session, report_date: str) -> list[ChangeEvent]: ...
   `abs(after − before) / abs(before) × 100 ≥ swing_pct`. `pct_change` is that signed
   percentage. `swing_pct` defaults to 20.0 and the docstring states it.
 - `pe_congressional_actions` columns: `pe_number`, `agency`, `fiscal_year`, `chamber`
-  (`House` 13,097 rows, `Senate` 13,447 rows, FY2012–FY2027), `report_citation`,
+  (`House` 13,097 rows FY2012–FY2027, `Senate` 13,447 rows FY2013–FY2027), `report_citation`,
   `request_k`, `committee_delta_k`, `authorized_k`, `rationale`. `new_committee_actions`
   emits one event per row with nonzero `committee_delta_k`: `before_k=request_k`,
   `after_k=authorized_k`, `from_vintage=to_vintage=None`, and `detail` **must begin with
@@ -854,9 +857,21 @@ def new_reprogramming(session, report_date: str) -> list[ChangeEvent]: ...
   field and House and Senate are never pooled (invariant 4). The word "authorized" is
   acceptable in `detail`; "appropriated" and "enacted" are not (invariant 3).
 - `pe_execution` has several rows per `(pe_number, agency, report_date)` because each
-  appropriation year (`fy_start`) and each `line_number` is its own row (29,571 such
-  groups). `new_reprogramming(session, report_date)` keys on
-  `(pe_number, agency, fy_start, line_number)`, finds the previous `report_date` for that
+  appropriation year (`fy_start`), each `line_number`, and each `budget_activity` is its
+  own row. **The row key is `(pe_number, agency, fy_start, line_number, budget_activity)`.**
+  Without `budget_activity` the key collides on 113 `(key, report_date)` groups, because a
+  PE can sit under two budget activities in the same quarter (`0604003F` under BA 4 and
+  BA 7 on 2021-09-30; `0305164F` under BA 4 and BA 7 through FY2013). With
+  `budget_activity` in the key, 16 groups still collide and none of them is a real PE
+  line: `8998` "CLOSED ACCOUNT ADJ" (11 groups), the classified aggregates `9999999999`
+  and `XXXXXXXXXX` (4 groups), and `0605027D8Z` on 2017-06-30, where the workbook carries
+  the line twice. `line_number` is NULL on 11,158 rows; NULL is a legitimate key value
+  and two NULLs are the same key.
+- **Collision policy:** a key with more than one row on a given `report_date` is
+  ambiguous. `new_reprogramming` emits nothing for that key on that call, whether the
+  duplication is in the requested report or in the previous one, and never sums the rows
+  or picks one of them. Say so in the docstring.
+- `new_reprogramming(session, report_date)` finds the previous `report_date` for each
   key (the greatest one less than the argument; if none, the whole amount is new), and
   emits one event per column that changed: one for `above_threshold_reprog_k` and one for
   `below_threshold_reprog_k`, with `detail` naming which ("above-threshold reprogramming"
@@ -875,7 +890,8 @@ termination, one swing above threshold, one below (not emitted), one nonzero-to-
 case (emitted as `swing`, not `termination`), and the forbidden cross-FY comparison
 (a PE whose `PY Actual` and `CY Request` differ in the same vintage yields nothing);
 one committee test asserts the chamber leads `detail`; one reprogramming test asserts
-above- and below-threshold changes are separate events. `python -m pytest -q` passes.
+above- and below-threshold changes are separate events, and one asserts that a key with
+two rows on the same report date yields no event for that key. `python -m pytest -q` passes.
 No UI, no export script (that is T13b).
 
 **Verify:**
