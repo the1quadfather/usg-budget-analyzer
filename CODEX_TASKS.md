@@ -58,7 +58,8 @@ tab-reordering bug reached `main` — it passed the smoke test and nobody clicke
 | T9b2 P-1 row identity | shipped | eleven-column key; commit `922e9f3` |
 | T9c P-1 ingest | shipped | `storage/ingest_p1.py`, 5,253 rows, archive rebuilt; commit `8251542` |
 | T9d Procurement coverage | shipped | Data Coverage metric; commit `ce5ee0b` |
-| T10–T15 | **open** | this document. Next: T11a (spec re-verified 2026-09-14), then T13a in parallel; T10a is research, not a Codex task |
+| T11a Lineage schema + BA renumbering | shipped | `PELineage`, `analysis/lineage.py::detect_ba_renumbering`; commit `9dcbc34`, merged `783d80e` |
+| T10, T11b–T15 | **open** | this document. Next: T11b, then T13a (specs verified 2026-09-15); T10a is research, not a Codex task |
 
 Database ground truth, queried 2026-09-09:
 
@@ -598,8 +599,8 @@ task; the detector only returns edges.
 - `funding_lines` has no `pe_number`; join through `program_element_id`. Use only
   `funding_type IN ('PY Actual','CY Request','BY Request')` with a non-null, nonzero
   `amount_thousands` when deciding whether a PE "carries money" in a fiscal year.
-- **The digit rule alone is noise.** It yields 502 directed pairs, 15 of which abut in
-  time, and only two of those are real. A title gate is mandatory:
+- **The digit rule alone is noise.** With the 8–10 character rule it yields 704 directed pairs, 19 of which abut under
+  the vintage rule, and only two of those are real (next-best title score 52.6). A title gate is mandatory:
   `rapidfuzz.fuzz.token_set_ratio(normalize_program_name(a), normalize_program_name(b))`
   (from `matching.normalizer`) scores the two real cases at 100 and every false pair
   seen at or below 40. Use a threshold of 85 and make it a named module constant.
@@ -650,17 +651,92 @@ PY
 
 ### T11b — Narrative transfer language
 
-**Files:** `analysis/lineage.py`, `tests/test_lineage.py`.
-**Depends on:** T11a merged.
+**Files:** `analysis/lineage.py`, `tests/test_lineage.py`, new
+`tests/fixtures/lineage_sentences.json`.
+**Depends on:** T11a merged (it is: commit `9dcbc34`, merged `783d80e` on 2026-09-15).
+**Spec verified against the narrative corpus 2026-09-15.**
 
 **Do:** `detect_narrative_transfers(session) -> list[LineageEdge]` scanning
-`pe_narratives.description` and `pe_accomplishments.text` for patterns such as
-"transferred from PE 0602115A", "realigned to PE …", "moved to Program Element …".
-Every edge carries the verbatim sentence and its `source_file`.
+`pe_narratives.description` and `pe_accomplishments.text`. Every edge carries the
+verbatim sentence in `evidence_text` and the row's `source_file` in `evidence_source`,
+with `method="narrative"` and `relation="transferred"`. Reuse `LineageEdge` and
+`_content_hash` from T11a unchanged.
 
-**Definition of done:** a fixture of six sentences (three positive, three negative such as
-"funds were transferred to the contractor") yields exactly three edges; the regex set is
-listed in the module docstring.
+**Verified facts (counts are `LIKE` hits on the shipped database):**
+
+- Both tables carry `pe_number`, `agency`, `fiscal_year`, `source_file`. Neither has a
+  `program_element_id`.
+- The phrasing that actually occurs, most common first: `realigned to PE X` (444),
+  `realigned from PE X` (325), `transferred to PE X` (260), `transferred from PE X`
+  (134), `consolidated from PE X` / `consolidated under PE X` / `consolidated into PE X`,
+  `moved to PE X` (50), `moved from PE X` (29), `transferred to new PE X`. The noun is
+  `PE`, `Program Element`, or `program element`, sometimes followed by `/Title` or
+  `(Title)`. `merged into`, `split from`, and `renumbered` occur zero times; do not
+  bother matching them.
+- PE numbers cited in text are 8 characters 10,160 times, 9 characters 645 times, 10
+  characters 23 times. Match `\d{7}[A-Z0-9]{1,3}` exactly as T11a's `_is_valid_pe_number`
+  does; `matching/fuzzy_matcher.py::PE_NUMBER_IN_TEXT_RE` is the same shape.
+- **Self-references are the main false positive.** Army FY2027 books say "This effort
+  was consolidated from PE 0602144A (Ground Technology) / Project DI7 …" *inside* PE
+  0602144A: a project moved within one PE. A cited PE equal to the row's own `pe_number`
+  must never produce an edge.
+- Direction: `from X` / `consolidated from X` makes X the predecessor and the row's PE
+  the successor; `to X` / `into X` / `under X` / `to new X` makes the row's PE the
+  predecessor and X the successor. Both `predecessor_agency` and `successor_agency` are
+  the row's `agency` unless the sentence names another component (leave that case for
+  later; record the row's agency and say so in the docstring).
+- `first_fy_after`: take the first `FY ?20\d\d` or `FY ?\d\d` in the sentence
+  ("in FY 2025", "Beginning in FY 2025", "starting in FY 2026", "For FY2026", "FY27");
+  two-digit years are 2000-based. If the sentence names no year, use the row's
+  `fiscal_year` and set confidence lower.
+- Confidence: 0.9 when verb, direction, PE, and a year are all present; 0.7 when the
+  year came from the row instead of the sentence.
+- The same sentence recurs across files (the Defense-Wide volume and the per-agency
+  book carry identical text). Deduplicate on `content_hash`, keeping the first
+  `evidence_source` seen in `(source_file, id)` order.
+- Sentence splitting: split on `. ` and newlines; R-2 text extracted from PDF sometimes
+  embeds exhibit-header boilerplate ("Appropriation/Budget Activity R-1 Program Element
+  (Number/Name) …") mid-sentence. Keep the sentence verbatim anyway; do not clean it.
+
+**Fixture** (`tests/fixtures/lineage_sentences.json`, a list of
+`{"pe_number", "agency", "fiscal_year", "source_file", "text", "expect_edges"}`) with
+six sentences, three positive and three negative, adapted from the corpus:
+
+1. positive, row PE 0603176BR: "Funds in program element 0603176BR Project RR were
+   realigned to Project RR in PE 0603160BR during FY 2025 …" → 0603176BR → 0603160BR,
+   `first_fy_after=2025`.
+2. positive, row PE 0602146A: "This effort was consolidated from PE 0602182A (C3I
+   Applied Research) / Project CX3 …" (no year) → 0602182A → 0602146A, confidence 0.7.
+3. positive, row PE 0604XXXN (any valid Navy PE): "SLCM funds were transferred to new
+   PE 0105519N starting in FY 2026." → row PE → 0105519N, `first_fy_after=2026`.
+4. negative: "This effort was consolidated from PE 0602144A (Ground Technology) /
+   Project DI7 …" with row PE 0602144A (self-reference).
+5. negative: "Funds were transferred to the contractor in FY 2025 to accelerate
+   integration." (no PE).
+6. negative: "Project 016, Close Combat Lethality, moved to the Soldier Lethality Cross
+   Functional Team." (no PE).
+
+**Definition of done:** the fixture yields exactly three edges with the directions and
+years above; every edge's `evidence_text` is a verbatim substring of the fixture text
+(assert `evidence_text in text`); the regex set is listed in the module docstring; on the
+shipped database the detector runs in under 60 s and the report prints the edge count
+plus the first ten edges; `python -m pytest -q` passes; T11a's tests still pass
+unchanged. Do not touch `app.py` or `storage/`.
+
+**Verify:**
+```bash
+python -m pytest -q
+python - <<'PY'
+import time
+from storage.db import get_engine, get_session_factory
+from analysis.lineage import detect_narrative_transfers
+session = get_session_factory(get_engine("sqlite:///data/processed/usg_budgets.db"))()
+t0 = time.time(); edges = detect_narrative_transfers(session)
+print(len(edges), "edges in", round(time.time() - t0, 1), "s")
+for edge in edges[:10]:
+    print(edge.predecessor_pe, "->", edge.successor_pe, edge.first_fy_after, edge.confidence, edge.evidence_text[:120])
+PY
+```
 
 ### T11c — Lineage golden set, ingest, and eval
 
@@ -720,6 +796,7 @@ human action.
 
 **Files:** new `analysis/changefeed.py`, new `tests/test_changefeed.py`.
 **Depends on:** nothing (T4's `pb_cycle` already exists).
+**Spec verified against the shipped database 2026-09-15.**
 
 ```python
 Kind = Literal["new_start", "termination", "swing", "committee_action", "reprogramming"]
@@ -742,14 +819,79 @@ def new_committee_actions(session, fiscal_year: int) -> list[ChangeEvent]: ...
 def new_reprogramming(session, report_date: str) -> list[ChangeEvent]: ...
 ```
 
-Compare like with like only: `BY Request` in PB N against `CY Request` for the same FY in
-PB N+1 is a legitimate vintage diff; `PY Actual` against `CY Request` is not a change and
-must not be emitted.
+**Verified facts:**
 
-**Definition of done:** output is deterministic and sorted for a fixed pair of vintages;
-the threshold is a named parameter with its default documented; tests cover one new
-start, one termination, one swing above threshold, one below (not emitted), and the
-forbidden PY-vs-CY comparison (not emitted).
+- The vintage offsets are exact and have no exceptions in 55,652 rows: for every line,
+  `fiscal_year - pb_cycle` is 0 for `BY Request`, −1 for `CY Request`, −2 for
+  `PY Actual`, and the same for the three `Mandatory` variants. So the FY2025 figure for
+  a PE is its `BY Request` in PB2025, its `CY Request` in PB2026, and its `PY Actual`
+  in PB2027.
+- **Compare like with like** therefore means: for one `fiscal_year`, compare the amount
+  in `older_pb` against the amount in `newer_pb`, whatever the two `funding_type` labels
+  are. Never compare two different fiscal years. Never mix a `Mandatory` type with a
+  discretionary one (invariant 5); `diff_vintages` uses only `PY Actual`, `CY Request`,
+  `BY Request`.
+- `program_elements` is one row per `(pe_number, agency)` (2,131 rows, 2,131 distinct
+  pairs), so `program_name` comes straight from it. `funding_lines` joins through
+  `program_element_id`.
+- `new_start`: the PE has a nonzero line for `fiscal_year == newer_pb` in `newer_pb` and
+  **no line of any type in `older_pb`**. `termination`: the PE has a nonzero line in
+  `older_pb` and **no line of any type in `newer_pb`**. Absence means the PE left the
+  R-1, not that it went to zero; a zero amount in the newer vintage is a `swing`, not a
+  termination. A budget-activity renumbering (T11) will show up as one termination plus
+  one new start; that is correct for this task and T11d will later cross-reference
+  `pe_lineage`. Say so in the docstring.
+- `swing`: same PE, same `fiscal_year`, both vintages present, `before_k` nonzero, and
+  `abs(after − before) / abs(before) × 100 ≥ swing_pct`. `pct_change` is that signed
+  percentage. `swing_pct` defaults to 20.0 and the docstring states it.
+- `pe_congressional_actions` columns: `pe_number`, `agency`, `fiscal_year`, `chamber`
+  (`House` 13,097 rows, `Senate` 13,447 rows, FY2012–FY2027), `report_citation`,
+  `request_k`, `committee_delta_k`, `authorized_k`, `rationale`. `new_committee_actions`
+  emits one event per row with nonzero `committee_delta_k`: `before_k=request_k`,
+  `after_k=authorized_k`, `from_vintage=to_vintage=None`, and `detail` **must begin with
+  the chamber** ("House: Program Increase [+2,000]") because `ChangeEvent` has no chamber
+  field and House and Senate are never pooled (invariant 4). The word "authorized" is
+  acceptable in `detail`; "appropriated" and "enacted" are not (invariant 3).
+- `pe_execution` has several rows per `(pe_number, agency, report_date)` because each
+  appropriation year (`fy_start`) and each `line_number` is its own row (29,571 such
+  groups). `new_reprogramming(session, report_date)` keys on
+  `(pe_number, agency, fy_start, line_number)`, finds the previous `report_date` for that
+  key (the greatest one less than the argument; if none, the whole amount is new), and
+  emits one event per column that changed: one for `above_threshold_reprog_k` and one for
+  `below_threshold_reprog_k`, with `detail` naming which ("above-threshold reprogramming"
+  or "below-threshold reprogramming"; they carry different oversight meaning and are
+  never summed). `fiscal_year=fy_start`, `from_vintage`/`to_vintage` are the two report
+  dates' fiscal years, `before_k`/`after_k` are the column values. Report dates are
+  quarter-ends, latest `2026-03-31`.
+- `permalink` is `f"?tab=finder&pe={pe_number}&agency={agency}"`; `app.py` reads exactly
+  those three query-parameter names.
+
+**Definition of done:** all three functions return lists sorted by
+`(kind, agency, pe_number, fiscal_year)` and are deterministic for fixed inputs; the
+threshold is a named parameter with its default documented; tests on an in-memory SQLite
+session (pattern: `tests/test_reconcile.py::setUp`) cover one new start, one
+termination, one swing above threshold, one below (not emitted), one nonzero-to-zero
+case (emitted as `swing`, not `termination`), and the forbidden cross-FY comparison
+(a PE whose `PY Actual` and `CY Request` differ in the same vintage yields nothing);
+one committee test asserts the chamber leads `detail`; one reprogramming test asserts
+above- and below-threshold changes are separate events. `python -m pytest -q` passes.
+No UI, no export script (that is T13b).
+
+**Verify:**
+```bash
+python -m pytest -q
+python - <<'PY'
+from storage.db import get_engine, get_session_factory
+from analysis.changefeed import diff_vintages, new_committee_actions, new_reprogramming
+from collections import Counter
+session = get_session_factory(get_engine("sqlite:///data/processed/usg_budgets.db"))()
+events = diff_vintages(session, 2026, 2027)
+print("PB2026 vs PB2027:", Counter(e.kind for e in events))
+print("committee FY2027:", len(new_committee_actions(session, 2027)))
+print("reprogramming 2026-03-31:", len(new_reprogramming(session, "2026-03-31")))
+for e in events[:5]: print(e)
+PY
+```
 
 ### T13b — Change feed surface
 
