@@ -373,6 +373,12 @@ def _execution_key_clause(key: _ExecutionKey):
     )
 
 
+def _report_fiscal_year(report_date: str) -> int:
+    """Fiscal year a DD 1416 report date belongs to; 12-31 is Q1 of the next FY."""
+    report = date.fromisoformat(report_date)
+    return report.year + 1 if report.month >= 10 else report.year
+
+
 def _reprogramming_value_changed(
     before_k: float | None,
     after_k: float | None,
@@ -391,7 +397,9 @@ def new_reprogramming(
     Rows are matched on PE, agency, appropriation FY, line number, and budget
     activity. If that key has multiple rows in either the requested report or
     its greatest earlier report, the key is ambiguous and is skipped; rows are
-    never summed and no arbitrary row is selected.
+    never summed and no arbitrary row is selected. ``from_vintage`` and
+    ``to_vintage`` are the fiscal years the two report dates fall in, so a
+    12-31 report belongs to the following fiscal year.
     """
     current_statement = select(*_execution_columns()).where(
         PEExecution.report_date == report_date
@@ -419,7 +427,7 @@ def new_reprogramming(
             elif row.report_date == previous[0]:
                 previous[1].append(row)
 
-    to_vintage = date.fromisoformat(report_date).year
+    to_vintage = _report_fiscal_year(report_date)
     events: list[ChangeEvent] = []
     for key in unique_current_keys:
         current = current_groups[key][0]
@@ -428,7 +436,7 @@ def new_reprogramming(
             continue
         previous = prior_group[1][0] if prior_group is not None else None
         from_vintage = (
-            date.fromisoformat(previous.report_date).year
+            _report_fiscal_year(previous.report_date)
             if previous is not None
             else None
         )

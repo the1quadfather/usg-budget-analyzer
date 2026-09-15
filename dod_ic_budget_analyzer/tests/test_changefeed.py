@@ -344,7 +344,8 @@ class ChangeFeedTests(unittest.TestCase):
         for event in events:
             self.assertEqual(event.kind, "reprogramming")
             self.assertEqual(event.fiscal_year, 2025)
-            self.assertEqual(event.from_vintage, 2025)
+            # 2025-12-31 is Q1 of FY2026, so both vintages are FY2026.
+            self.assertEqual(event.from_vintage, 2026)
             self.assertEqual(event.to_vintage, 2026)
             self._assert_permalink(event)
 
@@ -430,7 +431,7 @@ class ChangeFeedTests(unittest.TestCase):
         self.assertEqual(len(events), 1)
         self.assertEqual(events[0].pe_number, "0605205A")
         self.assertEqual((events[0].before_k, events[0].after_k), (0.0, 9.0))
-        self.assertEqual(events[0].from_vintage, 2025)
+        self.assertEqual(events[0].from_vintage, 2026)
 
     def test_committee_and_reprogramming_sort_deterministically(self):
         self._add_committee_action(
