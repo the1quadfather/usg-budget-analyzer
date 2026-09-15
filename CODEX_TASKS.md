@@ -750,6 +750,10 @@ PY
 definition of done. It named no file for the archive, no golden-set schema, and no
 evaluation universe. All three are specified below. The ignored working `.db` is mutated
 by the ingest, as every ingest task does; that is expected, not a contradiction.
+**Revised again 2026-09-15** after a second correct stop: one golden pair is emitted by
+both detectors, so the eval counts distinct pairs (421 unlabelled, not 422), the
+fiscal-year check accepts any detected edge for the pair, and the two funding-series
+cases carry `evidence_quote: null`.
 
 **Verified facts (shipped database, 2026-09-15):**
 
@@ -757,7 +761,13 @@ by the ingest, as every ingest task does; that is expected, not a contradiction.
   return 2 edges (`detect_ba_renumbering`, `method="ba_renumber"`,
   `evidence_source="funding_series"`, `evidence_text=None`) and 431 edges
   (`detect_narrative_transfers`, `method="narrative"`), all 431 with distinct
-  `(predecessor_pe, successor_pe)` pairs; 338 at confidence 0.9, 93 at 0.7.
+  `(predecessor_pe, successor_pe)` pairs; 338 at confidence 0.9, 93 at 0.7. **One pair
+  is emitted by both detectors:** `0609345A -> 0605345A` as `ba_renumber` (FY2026, from
+  the funding series, `evidence_text=None`) and as `narrative` (FY2027, Army FY2027
+  Vol 3 BA 5D: "This effort was realigned from PE 0609345A/ Project A46 beginning FY
+  2027"). The two edges have different `content_hash` values. So: 433 raw edges, 432
+  distinct pairs. The year disagreement is real evidence, not an error; the golden set
+  records the funding-series year and notes the narrative one.
 - Narrative `evidence_source` is the R-2 book filename the row came from
   (`af_fy2019_..._Vol_II_FY19.pdf`, `PB_2026_RDTE_VOL_5.xml`, 173 distinct). **None of
   them is registered in `source_documents`** (0 of 431 match `filename`; that table
@@ -784,7 +794,9 @@ by the ingest, as every ingest task does; that is expected, not a contradiction.
 `{"predecessor_pe", "predecessor_agency", "successor_pe", "successor_agency", "relation",
 "first_fy_after", "label", "method", "evidence_quote", "evidence_source", "evidence_url",
 "note"}`. `label` is `"edge"` or `"no_edge"`. `evidence_quote` is verbatim from the
-database row (copy it from `detect_narrative_transfers` output; do not retype it).
+database row for narrative cases (copy it from `detect_narrative_transfers` output; do
+not retype it) and `null` for the two funding-series cases, whose evidence is the
+funding series itself (`evidence_text` is `None` on those edges).
 Ten positives and two negatives, all hand-verified 2026-09-15 against the row text:
 
 | # | Predecessor | Successor | FY | Method | Source | Note |
@@ -798,7 +810,7 @@ Ten positives and two negatives, all hand-verified 2026-09-15 against the row te
 | 7 | 1206601F (AF) | 1206601SF (**Space Force**) | 2021 | narrative | AF FY2021 Vol I | Appropriation 3600 to 3620; detector records Air Force on both sides |
 | 8 | 0603112F (AF) | 0603030F (AF) | 2021 | narrative | AF FY2021 Vol I | Advanced Materials for Weapon Systems into AF Foundational Development/Demos |
 | 9 | 0308609V (DW) | 0307609V (DW) | 2023 | ba_renumber | `funding_series`; `evidence_url` = `https://comptroller.war.gov/budgetmaterials/budget2023.aspx` | NISS Software Pilot Program, BA 8 to BA 7, confidence 0.9 |
-| 10 | 0609345A (Army) | 0605345A (Army) | 2026 | ba_renumber | `funding_series`; `evidence_url` = `https://comptroller.war.gov/budgetmaterials/budget2026.aspx` | UAS Launched Effects, BA 9 to BA 5, confidence 1.0 |
+| 10 | 0609345A (Army) | 0605345A (Army) | 2026 | ba_renumber | `funding_series`; `evidence_url` = `https://comptroller.war.gov/budgetmaterials/budget2026.aspx` | UAS Launched Effects, BA 9 to BA 5, confidence 1.0; also emitted as `narrative` with FY2027 (see verified facts), so the FY check passes on the funding-series edge |
 | N1 | 0603030F (AF) | 0602102F (AF) | 2021 | narrative | AF FY2021 Vol I | **no_edge**: the false positive described above |
 | N2 | 0602144A (Army) | 0602144A (Army) | 2027 | narrative | any | **no_edge**: self-reference; a detector must never emit X -> X |
 
@@ -806,18 +818,21 @@ Ten positives and two negatives, all hand-verified 2026-09-15 against the row te
 funding-series cases. Fill `first_fy_after` from the table.
 
 **Eval** (`analysis/lineage_eval.py`, pattern `analysis/linker_eval.py`): run both
-detectors against the live database, match on `(predecessor_pe, successor_pe)` only, and
-print one line per golden case (PASS/FAIL, and for positives whether `first_fy_after`
-matched), then:
+detectors against the live database, reduce their output to **distinct
+`(predecessor_pe, successor_pe)` pairs** (a pair emitted by both detectors counts once),
+match golden cases on that pair only, and print one line per golden case (PASS/FAIL,
+and for positives whether `first_fy_after` matched; the year check passes if **any**
+detected edge for the pair has the golden year), then:
 
 - recall = positives detected / positives;
-- precision = detected edges labelled `edge` / detected edges whose pair is in the golden
-  universe (positives plus negatives). Edges outside the universe are **unlabelled, not
+- precision = detected pairs labelled `edge` / detected pairs whose pair is in the golden
+  universe (positives plus negatives). Pairs outside the universe are **unlabelled, not
   scored**; print their count so coverage is stated, never implied;
 - exit code 1 if recall < 1.0, else 0. Precision is printed, not gated.
 
-Expected on the shipped database: recall 10/10, precision 10/11 (N1 is emitted, N2 is
-not), 422 unlabelled edges. State these numbers in the module docstring.
+Expected on the shipped database: 433 raw edges, 432 distinct pairs, recall 10/10,
+precision 10/11 (N1 is emitted, N2 is not), 421 unlabelled pairs, 10/10 year checks.
+State these numbers in the module docstring.
 
 **Ingest** (`storage/ingest_lineage.py`, pattern `storage/ingest_p1.py` for `main()`):
 `ingest_lineage(session) -> dict[str, int]` deletes every `pe_lineage` row whose `method`
@@ -833,8 +848,8 @@ an in-memory session): load `tests/fixtures/lineage_sentences.json` rows as T11b
 do, run `ingest_lineage` twice, and assert the row count is 3 both times and the set of
 `content_hash` values is unchanged.
 
-**Definition of done:** the golden file holds exactly the twelve cases above with
-verbatim quotes; `python analysis/lineage_eval.py` prints the expected numbers and exits
+**Definition of done:** the golden file holds exactly the twelve cases above, verbatim
+quotes on the ten narrative cases and `null` on the two funding-series cases; `python analysis/lineage_eval.py` prints the expected numbers and exits
 0; `ingest_lineage` is idempotent by test and by two real runs (433 rows after each);
 `python -m analysis.ai_budget --reset-runtime` then `python -m storage.build_archive`
 run, the `.db.gz` committed, and the commit message states `pe_lineage` 0 -> 433;
