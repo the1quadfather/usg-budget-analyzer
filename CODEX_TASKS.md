@@ -929,14 +929,79 @@ python -m storage.build_archive
 
 ### T12a — Data dictionary
 
-**Files:** new `DATA_DICTIONARY.md`.
+**Files:** new `DATA_DICTIONARY.md` at the repo root. No other files.
 **Depends on:** nothing.
+**Revised 2026-09-16** after Codex correctly stopped: the first version said "the two
+`document_type` values"; the archive has had three since T9c (`P1`). Every enumeration
+and count below was queried from the shipped archive on 2026-09-16 (`git show
+main:dod_ic_budget_analyzer/data/processed/usg_budgets.db.gz`, decompressed). Quote them;
+do not re-derive them from the ignored working `.db`, which accumulates runtime rows
+(`search_log` had 3 on one machine) and may lag the archive.
 
-**Definition of done:** every table in the shipped database and every column, with type,
-unit, allowed values where enumerated (the six `funding_type` values, the two
-`document_type` values, `chamber`), and the source exhibit it comes from; row counts as of
-the current archive; a "runtime tables, not shipped" section listing `ai_cache`,
-`ai_spend`, `ai_user_history`, `search_log`.
+**Verified facts (shipped archive, 2026-09-16):** 13 tables, 43 indexes.
+
+| Table | Rows | Source exhibit / origin |
+|---|---|---|
+| `source_documents` | 412 | registry of ingested files: `R1` 29, `DD1416` 381, `P1` 2 |
+| `program_elements` | 2,131 | R-1 `r1_display.xlsx` (`parsing/xlsx_ingest.py`), plus pre-FY2012 PDF/OCR rows |
+| `funding_lines` | 55,652 | R-1; `funding_type` six values (below); `pb_cycle` 1998–2027 |
+| `procurement_lines` | 5,253 | P-1 `p1_display.xlsx` PB2026 and PB2027 (`storage/ingest_p1.py`) |
+| `pe_execution` | 79,677 | DD 1416 quarterly execution workbooks (T5) |
+| `pe_congressional_actions` | 26,544 | House and Senate committee/authorization tables, FY2012–FY2027 (M2a); see `CODEX_HANDOFF.md` §1 |
+| `pe_narratives` | 18,268 | R-2 justification books, XML (PB2026+) and PDF (`parsing/r2_parser.py`); `project_number == ""` on 5,864 PE-level rows |
+| `pe_accomplishments` | 101,219 | R-2 accomplishment / plans line items |
+| `pe_lineage` | 433 | **derived** from `funding_lines` and `pe_narratives` by `analysis/lineage.py`; rebuilt by `storage/ingest_lineage.py` |
+| `ai_cache`, `ai_spend`, `ai_user_history`, `search_log` | 0 each | runtime, reset on every archive build (`analysis/ai_budget.py --reset-runtime`) |
+
+Enumerations (value: count):
+
+- `source_documents.document_type`: `R1` 29, `DD1416` 381, `P1` 2. **Three values.**
+- `funding_lines.funding_type`: `PY Actual` 20,692; `CY Request` 16,055; `BY Request`
+  18,713; `PY Mandatory` 6; `CY Mandatory` 160; `BY Mandatory` 26. Six values.
+- `procurement_lines.funding_type`: the same six names (`PY Actual` 1,763; `CY Request`
+  1,658; `BY Request` 1,532; `PY Mandatory` 9; `CY Mandatory` 138; `BY Mandatory` 153).
+- `procurement_lines.cost_type`: `A` 4,808; `B` 131; `C` 130; `E` 9; `G` 1; `L` 32;
+  `N` 97; and **blank** 45 (lines with no cost-type split). Titles are in
+  `cost_type_title`; see `CODEX_HANDOFF.md` §3 P-1 trap for what the letters mean.
+- `pe_congressional_actions.chamber`: `House` 13,097; `Senate` 13,447. Never pooled.
+- `pe_lineage.relation`: `transferred` 431; `renumbered` 2. `pe_lineage.method`:
+  `narrative` 431; `ba_renumber` 2. (`split` and `merged` are allowed by the `Relation`
+  type in `analysis/lineage.py` but no detector emits them yet.)
+- `pe_accomplishments.year_label` is **not a clean enumeration**: 29 distinct values.
+  The intended set is `Description`, `Plans`, `Accomplishments`, `Base Plans`, `OCO
+  Plans`, `Increase/Decrease Statement` (stored truncated to 20 characters as
+  `Increase/Decrease St`), `PY`, `CY`, `BY`, `New Start`; the remaining values (about
+  60 rows, e.g. `funds will support`, `activities include`) are parser leakage from the
+  PDF path. Document the intended set, state the leakage count, and do not clean it in
+  this task.
+
+Column types come from the SQLAlchemy models in `storage/db.py` (the only source of
+truth for names and types); confirm each table's column list against
+`PRAGMA table_info` on the archive so the document matches what ships, not what the
+model would create fresh. Units: `amount_thousands` and every `*_k` column are
+thousands of dollars; `funding_millions` and `*_m` are millions; `quantity` is a unit
+count; fiscal years are integers; `report_date`, `retrieved_at`, `ingested_at` are
+ISO dates/timestamps.
+
+**Definition of done:** `DATA_DICTIONARY.md` has one section per shipped table (nine)
+with every column's name, SQL type, unit or meaning, allowed values where enumerated
+(exactly the lists above), and the source exhibit; a row-count table matching the one
+above with the date and archive commit it was taken from; a "Runtime tables, not
+shipped" section listing the four runtime tables with their columns and stating they
+are 0 rows in the archive; a "Derived tables" note for `pe_lineage`; and a one-paragraph
+"Units and conventions" section. No code changes. `python -m pytest -q` still passes
+(nothing should have changed).
+
+**Verify:**
+```bash
+python -m pytest -q
+python - <<'PY'
+import sqlite3; c = sqlite3.connect("data/processed/usg_budgets.db")
+for (t,) in c.execute("select name from sqlite_master where type='table' and name not like 'sqlite_%' order by 1"):
+    print(t, c.execute(f"select count(*) from {t}").fetchone()[0], [r[1] for r in c.execute(f"pragma table_info({t})")])
+PY
+```
+Paste that output and state that every table and column in it appears in the document.
 
 ### T12b — Release bundle script
 
