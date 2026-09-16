@@ -63,7 +63,8 @@ tab-reordering bug reached `main` — it passed the smoke test and nobody clicke
 | T13a Change feed core | shipped | `analysis/changefeed.py`; PB2026 vs PB2027 yields 483 swings, 49 terminations, 44 new starts; commit `15edd75` + fixup `a656ca6`, merged `6722bc9` |
 | T11c Lineage golden set, ingest, eval | shipped | `analysis/lineage_golden.json`, `analysis/lineage_eval.py` (recall 10/10, precision 10/11, 421 unlabelled), `storage/ingest_lineage.py`; `pe_lineage` 0 -> 433; commit `6228a7d` |
 | T13b Change feed surface | shipped | "What changed" on Budget Trends, `scripts/export_changefeed.py` (576 events PB2026 -> PB2027, all fields validated); permalinks and selector edge cases clicked through; commit `fc91681` |
-| T10, T11d–T12, T14–T15 | **open** | this document. Next: T11d; T10a is research, not a Codex task |
+| T11d Lineage in the funding chart | shipped | `TrendTracker.get_pe_history_with_lineage()`, segments + seam rules + evidence expanders on Program Finder → Funding; clicked through on PE 0603216F and 0609345A; commit `af48a3f` |
+| T10, T11e, T12, T14–T15 | **open** | this document. Next: T12a, then T11e; T10a is research, not a Codex task |
 
 Database ground truth, queried 2026-09-09:
 
@@ -881,6 +882,46 @@ a caption naming both PEs and the relation; edges with confidence < 0.6 are dott
 off by default behind a checkbox labelled "Include possible lineage"; each edge has an
 expander with its evidence sentence; a series is **never silently spliced**; clicked
 through in a browser.
+
+---
+
+### T11e — Validate lineage PE numbers against the database
+
+**Files:** `analysis/lineage.py` (both detectors), `tests/test_lineage.py`,
+`analysis/lineage_eval.py` (docstring numbers), `data/processed/usg_budgets.db.gz`
+(rebuilt via `storage/ingest_lineage.py`), `CODEX_HANDOFF.md` §1 (row count).
+**Depends on:** T11d merged (it is: commit `af48a3f`, merged 2026-09-16).
+
+**Verified facts (shipped database, 2026-09-16):** of the 433 `pe_lineage` rows, 11 have
+a `predecessor_pe` and 17 have a `successor_pe` that appears in neither
+`program_elements` nor the funding series. Two classes:
+
+- **Book typos** the regex accepts because `\d{7}[A-Z0-9]{1,3}` also matches a run of
+  eight or nine digits: `06030216F -> 0603216F` (AF FY2021 Vol I; the sentence is
+  "transferred from PE 06030216F ... to PE 0602201F", so the edge is a phantom
+  predecessor into the narrative's own PE), `06005053A`, `06022787A`, `0622144A`,
+  `0622145A`, `06020147A`, `06020148A`, `03031113F`, `030205208M`, `0270344A`.
+- **Real PEs outside the R-1 corpus:** Defense Health Program elements with a `DHA`
+  suffix (`0602115DHA`, `0603115DHA`, `0605013DHA`, `0605145DHA`, `0604110DHA`) and
+  Space Force successors not yet in the funding series (`1206402SF`, `1204857F`).
+
+**Definition of done:** an edge is emitted only when **both** PE numbers exist in
+`program_elements`; rejected edges are counted and printed by method and reason
+(`unknown_predecessor`, `unknown_successor`) so coverage is stated. Do not "repair"
+typos by editing the captured number. The self-reference guard stays. Update the eval
+docstring's expected counts to the new numbers and keep recall 10/10 (all ten golden
+positives use PEs that exist). Rebuild the archive; commit message states the
+`pe_lineage` before -> after count. Do not touch `app.py` or `trend_tracker.py`.
+
+**Verify:**
+```bash
+python -m pytest -q
+python analysis/lineage_eval.py
+python -m storage.ingest_lineage
+python -m storage.ingest_lineage            # second run: identical counts
+python -m analysis.ai_budget --reset-runtime
+python -m storage.build_archive
+```
 
 ---
 
