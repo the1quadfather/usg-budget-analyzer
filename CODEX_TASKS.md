@@ -61,7 +61,8 @@ tab-reordering bug reached `main` — it passed the smoke test and nobody clicke
 | T11a Lineage schema + BA renumbering | shipped | `PELineage`, `analysis/lineage.py::detect_ba_renumbering`; commit `9dcbc34`, merged `783d80e` |
 | T11b Narrative transfer language | shipped | `analysis/lineage.py::detect_narrative_transfers`, 431 edges on the shipped database; commit `8eb6195`, merged `9eec75b` |
 | T13a Change feed core | shipped | `analysis/changefeed.py`; PB2026 vs PB2027 yields 483 swings, 49 terminations, 44 new starts; commit `15edd75` + fixup `a656ca6`, merged `6722bc9` |
-| T10, T11c–T12, T13b–T15 | **open** | this document. Next: T11c, then T13b; T10a is research, not a Codex task |
+| T11c Lineage golden set, ingest, eval | shipped | `analysis/lineage_golden.json`, `analysis/lineage_eval.py` (recall 10/10, precision 10/11, 421 unlabelled), `storage/ingest_lineage.py`; `pe_lineage` 0 -> 433; commit `6228a7d` |
+| T10, T11d–T12, T13b–T15 | **open** | this document. Next: T13b, then T11d; T10a is research, not a Codex task |
 
 Database ground truth, queried 2026-09-09:
 
@@ -871,7 +872,7 @@ python -m storage.build_archive
 
 **Files:** `app.py` (Program Finder → Funding), `analysis/trend_tracker.py` (a
 `get_pe_history_with_lineage()` that returns the same frame plus a `segment` column).
-**Depends on:** T11c merged.
+**Depends on:** T11c merged (it is: commit `6228a7d`, merged 2026-09-16).
 
 **Definition of done:** when a selected PE has an edge, the chart draws the predecessor
 and successor series in distinct segments with a visible seam (a rule mark at the FY) and
