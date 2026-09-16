@@ -8,10 +8,10 @@ high-speed pivoting and Compound Annual Growth Rate (CAGR) calculations.
 
 import logging
 import polars as pl
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
 
-from storage.db import FundingLine, ProgramElement
+from storage.db import FundingLine, PELineage, ProgramElement
 
 logger = logging.getLogger(__name__)
 
@@ -20,6 +20,7 @@ logger = logging.getLogger(__name__)
 # triple-counts the year, so trends pick ONE per year by reliability.
 FUNDING_TYPE_PRIORITY = {"PY Actual": 0, "CY Request": 1, "BY Request": 2}
 PRIMARY_FUNDING_TYPES = tuple(FUNDING_TYPE_PRIORITY)
+LINEAGE_CONFIDENCE_THRESHOLD = 0.6
 
 
 class TrendTracker:
@@ -179,6 +180,72 @@ class TrendTracker:
             .drop("_prio", "funding_type")
             .sort("fiscal_year")
         )
+
+    def get_pe_lineage_edges(
+        self, pe_number: str, agency: str, include_possible: bool = False
+    ) -> list[dict[str, str | int | float | None]]:
+        """Return direct predecessor and successor edges for one PE."""
+        stmt = select(
+            PELineage.predecessor_pe,
+            PELineage.predecessor_agency,
+            PELineage.successor_pe,
+            PELineage.successor_agency,
+            PELineage.relation,
+            PELineage.first_fy_after,
+            PELineage.evidence_text,
+            PELineage.evidence_source,
+            PELineage.confidence,
+        ).where(
+            or_(
+                and_(
+                    PELineage.predecessor_pe == pe_number,
+                    PELineage.predecessor_agency == agency,
+                ),
+                and_(
+                    PELineage.successor_pe == pe_number,
+                    PELineage.successor_agency == agency,
+                ),
+            )
+        )
+        if not include_possible:
+            stmt = stmt.where(
+                PELineage.confidence >= LINEAGE_CONFIDENCE_THRESHOLD
+            )
+        stmt = stmt.order_by(
+            PELineage.first_fy_after,
+            PELineage.predecessor_pe,
+            PELineage.successor_pe,
+        )
+        return [dict(row) for row in self.session.execute(stmt).mappings()]
+
+    def get_pe_history_with_lineage(
+        self, pe_number: str, agency: str, include_possible: bool = False
+    ) -> pl.DataFrame:
+        """Return this PE and its direct lineage histories as distinct segments."""
+        pe_pairs = [(pe_number, agency)]
+        for edge in self.get_pe_lineage_edges(
+            pe_number, agency, include_possible=include_possible
+        ):
+            for pair in (
+                (edge["predecessor_pe"], edge["predecessor_agency"]),
+                (edge["successor_pe"], edge["successor_agency"]),
+            ):
+                if pair not in pe_pairs:
+                    pe_pairs.append(pair)
+
+        segments = []
+        for segment_pe, segment_agency in pe_pairs:
+            history = self.get_pe_history(segment_pe, segment_agency)
+            if not history.is_empty():
+                segments.append(
+                    history.with_columns(
+                        pl.lit(f"{segment_pe} ({segment_agency})")
+                        .alias("segment")
+                    )
+                )
+        if not segments:
+            return pl.DataFrame()
+        return pl.concat(segments).sort("segment", "fiscal_year")
 
     def get_pe_trends(self, start_year: int, end_year: int) -> pl.DataFrame:
         try:

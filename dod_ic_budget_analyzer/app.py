@@ -36,7 +36,7 @@ from analysis.provenance import (
     source_summary,
     xlsx_with_provenance,
 )
-from analysis.trend_tracker import TrendTracker
+from analysis.trend_tracker import LINEAGE_CONFIDENCE_THRESHOLD, TrendTracker
 from analysis.text_render import escape_dollars
 from analysis import primer
 from analysis.user_identity import streamlit_user_id
@@ -1149,8 +1149,41 @@ with tab_finder:
                     primer.PROGRAM_STRUCTURE + primer.FUNDING_BASES,
                 )
                 with SessionFactory() as session:
-                    hist = TrendTracker(session).get_pe_history(
-                        sel["pe_number"], sel["agency"]
+                    tracker = TrendTracker(session)
+                    all_lineage_edges = tracker.get_pe_lineage_edges(
+                        sel["pe_number"], sel["agency"],
+                        include_possible=True,
+                    )
+                    has_possible_lineage = any(
+                        edge["confidence"] < LINEAGE_CONFIDENCE_THRESHOLD
+                        for edge in all_lineage_edges
+                    )
+                    include_possible_lineage = st.checkbox(
+                        "Include possible lineage",
+                        value=False,
+                        disabled=not has_possible_lineage,
+                        key=(
+                            f"lineage_possible::{sel['pe_number']}::"
+                            f"{sel['agency']}"
+                        ),
+                        help=(
+                            "Includes lineage below 0.6 confidence. Possible "
+                            "segments and seams are dotted."
+                        ),
+                    )
+                    lineage_edges = (
+                        all_lineage_edges
+                        if include_possible_lineage
+                        else [
+                            edge for edge in all_lineage_edges
+                            if edge["confidence"] >= (
+                                LINEAGE_CONFIDENCE_THRESHOLD
+                            )
+                        ]
+                    )
+                    hist = tracker.get_pe_history_with_lineage(
+                        sel["pe_number"], sel["agency"],
+                        include_possible=include_possible_lineage,
                     )
                 if hist.is_empty():
                     st.info(
@@ -1158,18 +1191,26 @@ with tab_finder:
                         "(R-1 coverage: FY1996–FY2027)."
                     )
                 else:
-                    pdf = hist.to_pandas()
-                    pdf["pb_cycle_label"] = pdf["pb_cycle"].apply(
+                    chart_pdf = hist.to_pandas()
+                    chart_pdf["pb_cycle_label"] = chart_pdf["pb_cycle"].apply(
                         lambda value: (
                             f"PB{int(value)}" if pd.notna(value) else "Unknown"
                         )
                     )
                     if constant_dollars:
                         from analysis.deflators import apply_deflator
-                        pdf["amount_thousands"] = apply_deflator(
-                            pdf, amount_column="amount_thousands"
+                        chart_pdf["amount_thousands"] = apply_deflator(
+                            chart_pdf, amount_column="amount_thousands"
                         )
-                    pdf["amount_m"] = pdf["amount_thousands"] / 1_000.0
+                    chart_pdf["amount_m"] = (
+                        chart_pdf["amount_thousands"] / 1_000.0
+                    )
+                    selected_segment = (
+                        f"{sel['pe_number']} ({sel['agency']})"
+                    )
+                    pdf = chart_pdf[
+                        chart_pdf["segment"] == selected_segment
+                    ].copy()
                     pdf["yoy_pct"] = pdf["amount_m"].pct_change() * 100.0
 
                     latest = pdf.iloc[-1]
@@ -1205,10 +1246,62 @@ with tab_finder:
                         m4.metric(f"CAGR ({span}y)", f"{cagr:+.1f}%",
                                   help=primer.HELP["cagr"])
 
-                    base = alt.Chart(pdf).encode(
+                    possible_segments = set()
+                    supported_segments = set()
+                    seam_rows = []
+                    for edge in lineage_edges:
+                        predecessor = (
+                            edge["predecessor_pe"],
+                            edge["predecessor_agency"],
+                        )
+                        successor = (
+                            edge["successor_pe"], edge["successor_agency"]
+                        )
+                        other = (
+                            successor
+                            if predecessor == (
+                                sel["pe_number"], sel["agency"]
+                            )
+                            else predecessor
+                        )
+                        other_segment = f"{other[0]} ({other[1]})"
+                        confidence_label = (
+                            "Possible (<0.6)"
+                            if edge["confidence"] < (
+                                LINEAGE_CONFIDENCE_THRESHOLD
+                            )
+                            else "Supported"
+                        )
+                        if edge["confidence"] < (
+                            LINEAGE_CONFIDENCE_THRESHOLD
+                        ):
+                            possible_segments.add(other_segment)
+                        else:
+                            supported_segments.add(other_segment)
+                        seam_rows.append({
+                            "first_fy_after": edge["first_fy_after"],
+                            "transition": (
+                                f"{edge['predecessor_pe']} → "
+                                f"{edge['successor_pe']}"
+                            ),
+                            "relation": edge["relation"],
+                            "lineage_confidence": confidence_label,
+                        })
+                    possible_segments -= supported_segments
+                    chart_pdf["lineage_confidence"] = chart_pdf[
+                        "segment"
+                    ].apply(
+                        lambda segment: (
+                            "Possible (<0.6)"
+                            if segment in possible_segments
+                            else "Supported"
+                        )
+                    )
+
+                    base = alt.Chart(chart_pdf).encode(
                         x=alt.X("fiscal_year:O", title="Fiscal Year")
                     )
-                    line = base.mark_line(color="#c3c2b7", strokeWidth=2).encode(
+                    line = base.mark_line(strokeWidth=2).encode(
                         y=alt.Y(
                             "amount_m:Q",
                             title=(
@@ -1216,20 +1309,57 @@ with tab_finder:
                                 if constant_dollars else "$ Millions (then-year)"
                             ),
                         ),
+                        color=alt.Color("segment:N", title="PE segment"),
+                        strokeDash=alt.StrokeDash(
+                            "lineage_confidence:N",
+                            title="Lineage confidence",
+                            scale=alt.Scale(
+                                domain=["Supported", "Possible (<0.6)"],
+                                range=[[1, 0], [6, 4]],
+                            ),
+                        ),
                     )
                     points = base.mark_point(filled=True, size=90).encode(
                         y="amount_m:Q",
-                        color=alt.Color("basis:N", scale=BASIS_COLORS,
-                                        title="Figure basis"),
+                        color=alt.Color("segment:N", title="PE segment"),
+                        shape=alt.Shape("basis:N", title="Figure basis"),
                         tooltip=[
                             alt.Tooltip("fiscal_year:O", title="FY"),
                             alt.Tooltip("amount_m:Q", format=",.1f", title="$M"),
+                            alt.Tooltip("segment:N", title="PE segment"),
                             alt.Tooltip("basis:N", title="Basis"),
                             alt.Tooltip("pb_cycle_label:N", title="Submission"),
                         ],
                     )
-                    st.altair_chart((line + points).properties(height=280),
-                                    width="stretch")
+                    funding_chart = line + points
+                    if seam_rows:
+                        seams = alt.Chart(pd.DataFrame(seam_rows)).mark_rule(
+                            color="#e34948", strokeWidth=2
+                        ).encode(
+                            x=alt.X("first_fy_after:O", title="Fiscal Year"),
+                            strokeDash=alt.StrokeDash(
+                                "lineage_confidence:N",
+                                title="Lineage confidence",
+                                scale=alt.Scale(
+                                    domain=["Supported", "Possible (<0.6)"],
+                                    range=[[1, 0], [6, 4]],
+                                ),
+                            ),
+                            tooltip=[
+                                alt.Tooltip(
+                                    "first_fy_after:O", title="Transition FY"
+                                ),
+                                alt.Tooltip(
+                                    "transition:N", title="PE transition"
+                                ),
+                                alt.Tooltip("relation:N", title="Relation"),
+                            ],
+                        )
+                        funding_chart += seams
+                    st.altair_chart(
+                        funding_chart.properties(height=280),
+                        width="stretch",
+                    )
                     st.caption(
                         "Each year shows its most reliable figure: reported "
                         "actuals, then the enacted/current-year figure, then "
@@ -1242,12 +1372,65 @@ with tab_finder:
                             "Amounts are then-year dollars."
                         )
                     )
+                    lineage_pairs = {
+                        (sel["pe_number"], sel["agency"]),
+                    }
+                    for edge in lineage_edges:
+                        lineage_pairs.add((
+                            edge["predecessor_pe"],
+                            edge["predecessor_agency"],
+                        ))
+                        lineage_pairs.add((
+                            edge["successor_pe"],
+                            edge["successor_agency"],
+                        ))
+                        confidence_note = (
+                            " Possible lineage; shown as dotted."
+                            if edge["confidence"] < (
+                                LINEAGE_CONFIDENCE_THRESHOLD
+                            ) else ""
+                        )
+                        st.caption(
+                            f"FY{edge['first_fy_after']} seam: PE "
+                            f"{edge['predecessor_pe']} → PE "
+                            f"{edge['successor_pe']} — "
+                            f"{edge['relation']}.{confidence_note}"
+                        )
+                        with st.expander(
+                            "Lineage evidence: "
+                            f"{edge['predecessor_pe']} → "
+                            f"{edge['successor_pe']} "
+                            f"({edge['relation']}, "
+                            f"FY{edge['first_fy_after']})"
+                        ):
+                            if edge["evidence_text"]:
+                                st.write(escape_dollars(edge["evidence_text"]))
+                            else:
+                                st.write(
+                                    "Detected from funding-series continuity; "
+                                    "no narrative evidence sentence is available."
+                                )
+                            st.caption(
+                                "Evidence source: "
+                                f"{edge['evidence_source'] or 'not recorded'} · "
+                                f"Confidence: {edge['confidence']:.2f}"
+                            )
+                    lineage_sources = fetch_funding_sources(
+                        pe_numbers=tuple(sorted({
+                            pe_number for pe_number, _ in lineage_pairs
+                        })),
+                        agencies=tuple(sorted({
+                            agency for _, agency in lineage_pairs
+                        })),
+                    )
+                    lineage_sources = include_deflator_source(lineage_sources)
+                    render_provenance(lineage_sources)
+
                     program_sources = fetch_funding_sources(
                         pe_numbers=(sel["pe_number"],),
                         agencies=(sel["agency"],),
                     )
                     program_sources = include_deflator_source(program_sources)
-                    render_provenance(program_sources)
 
                     yoy_df = pdf.dropna(subset=["yoy_pct"])
                     if not yoy_df.empty:
