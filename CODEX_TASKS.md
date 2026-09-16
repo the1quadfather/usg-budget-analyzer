@@ -62,7 +62,8 @@ tab-reordering bug reached `main` — it passed the smoke test and nobody clicke
 | T11b Narrative transfer language | shipped | `analysis/lineage.py::detect_narrative_transfers`, 431 edges on the shipped database; commit `8eb6195`, merged `9eec75b` |
 | T13a Change feed core | shipped | `analysis/changefeed.py`; PB2026 vs PB2027 yields 483 swings, 49 terminations, 44 new starts; commit `15edd75` + fixup `a656ca6`, merged `6722bc9` |
 | T11c Lineage golden set, ingest, eval | shipped | `analysis/lineage_golden.json`, `analysis/lineage_eval.py` (recall 10/10, precision 10/11, 421 unlabelled), `storage/ingest_lineage.py`; `pe_lineage` 0 -> 433; commit `6228a7d` |
-| T10, T11d–T12, T13b–T15 | **open** | this document. Next: T13b, then T11d; T10a is research, not a Codex task |
+| T13b Change feed surface | shipped | "What changed" on Budget Trends, `scripts/export_changefeed.py` (576 events PB2026 -> PB2027, all fields validated); permalinks and selector edge cases clicked through; commit `fc91681` |
+| T10, T11d–T12, T14–T15 | **open** | this document. Next: T11d; T10a is research, not a Codex task |
 
 Database ground truth, queried 2026-09-09:
 
