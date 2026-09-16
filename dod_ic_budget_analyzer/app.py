@@ -18,6 +18,7 @@ labeled with their source.
 
 import os
 from pathlib import Path
+from urllib.parse import quote
 
 import altair as alt
 import pandas as pd
@@ -356,6 +357,53 @@ def fetch_agency_trends(start_yr: int, end_yr: int) -> pd.DataFrame:
     with SessionFactory() as session:
         df = TrendTracker(session).get_agency_trends(start_yr, end_yr)
     return df.to_pandas() if not df.is_empty() else pd.DataFrame()
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def fetch_pb_cycles() -> list[int]:
+    from sqlalchemy import select
+    from storage.db import FundingLine
+    SessionFactory = init_db_connection()
+    with SessionFactory() as session:
+        return list(session.execute(
+            select(FundingLine.pb_cycle)
+            .where(FundingLine.pb_cycle.is_not(None))
+            .distinct()
+            .order_by(FundingLine.pb_cycle)
+        ).scalars())
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def fetch_change_events(older_pb: int, newer_pb: int):
+    from analysis.changefeed import diff_vintages
+    SessionFactory = init_db_connection()
+    with SessionFactory() as session:
+        return diff_vintages(session, older_pb, newer_pb)
+
+
+def _change_amount(event) -> str:
+    def millions(value: float | None) -> str:
+        return "—" if value is None else f"${value / 1e3:,.1f}M"
+
+    if event.before_k is None:
+        return f"new {millions(event.after_k)}"
+    if event.after_k is None:
+        return f"previously {millions(event.before_k)}"
+    return f"{millions(event.before_k)} → {millions(event.after_k)}"
+
+
+def _change_event_table(events) -> pd.DataFrame:
+    return pd.DataFrame([
+        {
+            "PE": quote(event.permalink, safe="?=&"),
+            "Program": event.program_name,
+            "Component": event.agency,
+            "FY": event.fiscal_year,
+            "Change": _change_amount(event),
+            "Detail": event.detail,
+        }
+        for event in events
+    ])
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def fetch_coverage_stats() -> dict:
@@ -834,6 +882,94 @@ with tab_trends:
                 key=f"breakdown::{exec_comp}::{exec_fy}::{exec_dim}",
                 sources=usa_source,
             )
+
+    st.divider()
+    st.subheader("What changed")
+    st.caption(
+        "Compare discretionary R-1 observations from two PB submissions. "
+        "Swings use the change-feed's 20% materiality threshold; mandatory "
+        "funding remains a separate stream and is not included."
+    )
+    pb_cycles = fetch_pb_cycles()
+    if len(pb_cycles) < 2:
+        st.info("At least two PB submissions are required for a change feed.")
+    else:
+        vintage_col1, vintage_col2 = st.columns(2)
+        older_pb = vintage_col1.selectbox(
+            "Older PB cycle",
+            pb_cycles[:-1],
+            index=len(pb_cycles) - 2,
+            format_func=lambda year: f"PB{year}",
+            key="changefeed_older_pb",
+        )
+        newer_options = [year for year in pb_cycles if year > older_pb]
+        newer_pb = vintage_col2.selectbox(
+            "Newer PB cycle",
+            newer_options,
+            index=len(newer_options) - 1,
+            format_func=lambda year: f"PB{year}",
+            key="changefeed_newer_pb",
+        )
+        change_events = fetch_change_events(older_pb, newer_pb)
+        change_sources = [
+            source for source in fetch_funding_sources()
+            if source.get("publication_year") in {older_pb, newer_pb}
+        ]
+        events_by_kind = {
+            kind: [event for event in change_events if event.kind == kind]
+            for kind in ("new_start", "termination", "swing")
+        }
+        metric1, metric2, metric3 = st.columns(3)
+        metric1.metric("New starts", f"{len(events_by_kind['new_start']):,}")
+        metric2.metric(
+            "Terminations", f"{len(events_by_kind['termination']):,}"
+        )
+        metric3.metric("Material swings", f"{len(events_by_kind['swing']):,}")
+
+        if not change_events:
+            st.info("No qualifying changes were found for those PB submissions.")
+        else:
+            labels = {
+                "new_start": "New starts",
+                "termination": "Terminations",
+                "swing": "Material swings",
+            }
+            for kind in ("new_start", "termination", "swing"):
+                events = events_by_kind[kind]
+                with st.expander(f"{labels[kind]} ({len(events):,})"):
+                    if events:
+                        event_table = _change_event_table(events)
+                        st.dataframe(
+                            event_table,
+                            width="stretch",
+                            height=min(35 + len(events) * 35, 500),
+                            hide_index=True,
+                            column_config={
+                                "PE": st.column_config.LinkColumn(
+                                    "PE",
+                                    display_text=r"pe=([^&]+)",
+                                    width="small",
+                                ),
+                                "Program": st.column_config.TextColumn(
+                                    "Program", width="large"
+                                ),
+                                "FY": st.column_config.NumberColumn(
+                                    "FY", format="%d"
+                                ),
+                            },
+                        )
+                        render_table_downloads(
+                            event_table,
+                            name=(f"changefeed_pb{older_pb}_pb{newer_pb}_"
+                                  f"{kind}"),
+                            key=(f"changefeed::{older_pb}::{newer_pb}::"
+                                 f"{kind}"),
+                            sources=change_sources,
+                        )
+                    else:
+                        st.caption("No events in this category.")
+
+        render_provenance(change_sources)
 
 # ═══════════════════════════════ Program Finder ══════════════════════════════
 with tab_finder:
