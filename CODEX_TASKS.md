@@ -64,7 +64,8 @@ tab-reordering bug reached `main` — it passed the smoke test and nobody clicke
 | T11c Lineage golden set, ingest, eval | shipped | `analysis/lineage_golden.json`, `analysis/lineage_eval.py` (recall 10/10, precision 10/11, 421 unlabelled), `storage/ingest_lineage.py`; `pe_lineage` 0 -> 433; commit `6228a7d` |
 | T13b Change feed surface | shipped | "What changed" on Budget Trends, `scripts/export_changefeed.py` (576 events PB2026 -> PB2027, all fields validated); permalinks and selector edge cases clicked through; commit `fc91681` |
 | T11d Lineage in the funding chart | shipped | `TrendTracker.get_pe_history_with_lineage()`, segments + seam rules + evidence expanders on Program Finder → Funding; clicked through on PE 0603216F and 0609345A; commit `af48a3f` |
-| T10, T11e, T12, T14–T15 | **open** | this document. Next: T12a, then T11e; T10a is research, not a Codex task |
+| T12a Data dictionary | shipped | `DATA_DICTIONARY.md`, 13 tables validated against archive PRAGMA with 0 mismatches; commit `e32d3d7` |
+| T10, T11e, T12b, T14–T15 | **open** | this document. Next: T11e, then T12b; T10a is research, not a Codex task |
 
 Database ground truth, queried 2026-09-09:
 
@@ -970,10 +971,11 @@ Enumerations (value: count):
 - `pe_accomplishments.year_label` is **not a clean enumeration**: 29 distinct values.
   The intended set is `Description`, `Plans`, `Accomplishments`, `Base Plans`, `OCO
   Plans`, `Increase/Decrease Statement` (stored truncated to 20 characters as
-  `Increase/Decrease St`), `PY`, `CY`, `BY`, `New Start`; the remaining values (about
-  60 rows, e.g. `funds will support`, `activities include`) are parser leakage from the
-  PDF path. Document the intended set, state the leakage count, and do not clean it in
-  this task.
+  `Increase/Decrease St`), `PY`, `CY`, `BY`, `New Start`; the remaining values are
+  parser leakage from the PDF path. **Corrected 2026-09-17:** the spec first said
+  "about 60 rows"; Codex measured 298, of which 246 are `OOC Plans` (a misspelling
+  of OCO printed in the books themselves). Document the intended set, state the
+  leakage count, and do not clean it in this task.
 
 Column types come from the SQLAlchemy models in `storage/db.py` (the only source of
 truth for names and types); confirm each table's column list against
