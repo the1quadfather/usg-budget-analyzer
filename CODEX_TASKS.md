@@ -67,7 +67,7 @@ tab-reordering bug reached `main` — it passed the smoke test and nobody clicke
 | T11e Lineage PE validation | shipped | both detectors reject unknown endpoints (11 predecessor, 17 successor); `pe_lineage` 433 -> 405; dictionary and handoff updated. Codex commits `b1a3885` + `9ed1af8` (on `origin/codex/t11e`); landed on main as `6030a08` (squashed by a failed working-tree update) + archive restore `d374360` |
 | T12a Data dictionary | shipped | `DATA_DICTIONARY.md`, 13 tables validated against archive PRAGMA with 0 mismatches; commit `e32d3d7` |
 | T12b Release bundle script | shipped | `scripts/build_release.py` verifies the tracked archive and writes `release/usg-budgets-<date>/` (35 files, manifest matches the dictionary); commit `9fa7f1f` |
-| T10, T14–T15 | **open** | this document. Next: T14a (spec to be re-verified before hand-off); T10a is research, not a Codex task |
+| T10, T14–T15 | **open** | this document. Next: T14a (spec re-verified 2026-09-18); T10a is research, not a Codex task |
 
 Database ground truth, queried 2026-09-09:
 
@@ -1299,24 +1299,135 @@ through in a browser.
 
 ### T14a — Local retrieval over narratives
 
-**Files:** new `analysis/narrative_qa.py`, new `tests/test_narrative_qa.py`.
-**Depends on:** nothing. Uses the existing embeddings file under `data/processed/`.
+**Files:** new `analysis/narrative_qa.py`, new `storage/build_narrative_index.py`, new
+`analysis/narrative_qa_eval.py`, new `tests/test_narrative_qa.py`, new **tracked**
+`data/processed/narrative_index_multi-qa-MiniLM-L6-cos-v1.pt`, `README.md` (one
+paragraph plus the build command under `## Updating the data`, after the archive-rebuild
+block). Do not touch `app.py`, `matching/semantic_matcher.py`, or
+`scripts/build_release.py` (the index is regenerable and stays out of release bundles).
+**Depends on:** T11e merged (it is). The index hash is tied to the shipped narratives.
+**Rewritten 2026-09-18** against the repo: the first version said "uses the existing
+embeddings file". That file (`semantic_embeddings_multi-qa-MiniLM-L6-cos-v1.pt`) is the
+Program Finder's **program-level** index: 2,126 vectors, one per PE, built from the title
+plus a 400-character snippet. It cannot answer passage-level questions. T14a builds a
+separate passage index; the numbers below were measured on this machine.
+
+**Verified facts (shipped database and model, 2026-09-18):**
+
+- `pe_narratives`: 18,268 rows, mean 1,925 characters, 6,258 rows over 2,000 characters,
+  14,737 distinct texts (the same narrative repeats across fiscal-year books). The
+  model `multi-qa-MiniLM-L6-cos-v1` (already in `requirements.txt` via
+  `sentence-transformers`; dimension 384; `max_seq_length` 512 tokens, roughly 2,000
+  characters) truncates anything longer, so narratives must be chunked.
+- Chunking rule (fixed, so the count is reproducible): strip, split on the regex
+  `(?<=[.!?])\s+`, pack sentences greedily while
+  `len(chunk) + 1 + len(sentence) <= 1500`; a single sentence longer than 1,500
+  characters becomes its own chunk (never split mid-sentence). Read rows
+  `ORDER BY fiscal_year DESC, id`; deduplicate on `(pe_number, agency, chunk_text)`
+  keeping the first, so a repeated passage cites the latest book. Result on the shipped
+  database: **26,702 passages, mean 1,065 characters**.
+- Index size at float16: **20.5 MB** (26,702 x 384 x 2 bytes). Track it in git like the
+  archive; GitHub's per-file limit is 100 MB.
+- CPU encode rate here: about 23 passages/s at batch size 64, so a full build is about
+  **19 minutes**. That is why the index ships prebuilt: Community Cloud cannot build it on
+  a cold start. Query cost after model load: 30-130 ms per question (encode one string,
+  one matmul over 26,702 rows).
+- `pe_accomplishments` (101,219 rows, 74,849 distinct texts) is **excluded** from this
+  task; it would quadruple the index. Note it as a follow-up in your report.
+- Retrieval quality, measured against the full index (rank of the first passage from the
+  named PE): Skyborg -> `0603032F` rank 1; counter-UAS laser -> `0602605F` rank 1; JTRS
+  software-defined radio -> `0605042A` rank 1; EA-18G Next Generation Jammer ->
+  `0604269N` rank 1 (`0604274N` rank 5); quantum sensing -> `0602182A` rank 2; launched
+  effects -> `0605345A` rank 3. Known misses on proper nouns: "Dark Eagle" and
+  "Sentinel ICBM" (the model returns an Army radar also named Sentinel). The eval records
+  both kinds.
+
+**Index file format** (`torch.save` of one dict): keys `model` (str), `corpus_hash`
+(sha256 of the newline-joined, tab-separated `pe, agency, fy, project, source, text`
+fields in index order), `embeddings` (float16 tensor of shape (N, 384), L2-normalised),
+and the parallel lists `pe_number` (str), `agency` (str), `fiscal_year` (int),
+`project_number` (str, empty string for PE-level rows), `source_file` (str), `text`
+(str). One entry per passage in every list.
+
+**API:**
 
 ```python
 @dataclass(frozen=True)
 class Passage:
     pe_number: str; agency: str; fiscal_year: int
-    project_number: str | None
+    project_number: str | None        # None when the row's project_number is ""
     source_file: str
     text: str
-    score: float
+    score: float                      # cosine similarity, float
 
+def chunk_text(text: str, limit: int = 1500) -> list[str]: ...          # pure
+def index_rows(session) -> list[tuple[str, str, int, str, str, str]]: ...  # pure: (pe, agency, fy, project, source, chunk) after chunking + dedup, no model
 def retrieve(question: str, *, k: int = 8) -> list[Passage]: ...
+def index_status() -> dict: ...      # {"model", "passages", "corpus_hash", "path"}
 ```
 
-**Definition of done:** retrieval is fully local and free; a test asserts that a question
-naming a known program returns a passage from that PE in the top-3; runtime under 2 s on
-the shipped corpus after model load. No model call in this task.
+`retrieve` lazily loads the model and the index once per process (`functools.lru_cache`
+on two private loaders), encodes the question with `normalize_embeddings=True`, scores
+with one matmul against the float16 matrix cast to float32, and returns the top `k`
+passages in descending score. Whitespace-only question -> `[]`. Missing index file ->
+`FileNotFoundError` whose message names `python -m storage.build_narrative_index`. No
+network access and no model API call anywhere in this task.
+
+`storage/build_narrative_index.py`: `main()` with `--database` (default the working
+`.db`; call `get_engine()` so a clean clone expands the archive), `--output` (default the
+tracked path), `--limit N` (first N rows, for smoke runs to a temp path). Encodes with
+`batch_size=64`, stores float16, prints passage count, mean length, and elapsed seconds.
+
+**Eval (`analysis/narrative_qa_eval.py`, pattern `analysis/linker_eval.py`):** golden
+cases as `(question, acceptable_pe_numbers: set[str], gated: bool)`:
+
+| Question | Acceptable | Gated |
+|---|---|---|
+| `Skyborg autonomous aircraft vanguard program` | `{0603032F}` | yes |
+| `counter-UAS directed energy laser for base defense` | `{0602605F}` | yes |
+| `software defined radio for the Joint Tactical Radio System` | `{0605042A}` | yes |
+| `Next Generation Jammer for the EA-18G Growler` | `{0604269N, 0604274N}` | yes |
+| `What is the Army doing on launched effects for unmanned aircraft?` | `{0605345A, 0609345A}` | yes |
+| `Long Range Hypersonic Weapon Dark Eagle` | `{0604182A}` | no (documented miss) |
+| `Ground Based Strategic Deterrent Sentinel ICBM replacement` | `{0604858F, 0101125F}` | no (documented miss) |
+
+For each case call `retrieve(question, k=8)`, print the rank of the first acceptable PE
+(or "miss"), the top score, and the query time in ms; PASS if rank <= 3. Exit 1 if any
+**gated** case fails; ungated cases are printed with their actual top PE so the
+proper-noun weakness is stated, not hidden. Expected on the index built from the shipped
+database: 5/5 gated pass (ranks 1, 1, 1, 1, 3), every query under 2 s.
+
+**Tests (`tests/test_narrative_qa.py`):**
+
+- `chunk_text`: three short sentences -> one chunk equal to the stripped input; four
+  sentences of about 500 characters -> two chunks, each <= 1,500, each ending in `.`, and
+  joining the chunks with a single space reproduces the input; one 2,000-character
+  sentence -> one chunk of 2,000.
+- `index_rows` on an in-memory session (`storage.db.Base`; `PENarrative` needs no
+  `SourceDocument`) with two `PENarrative` rows for the same PE and agency carrying
+  identical text in FY2026 and FY2027 -> exactly one row with `fiscal_year == 2027`; add
+  a third row with different text -> two rows total.
+- `retrieve` against the **shipped index** with the real model: `pytest.skip` if the
+  index file is absent; otherwise `retrieve("Skyborg autonomous aircraft vanguard
+  program", k=3)` returns 3 passages, scores non-increasing, and some passage has
+  `pe_number == "0603032F"`; a second call to `retrieve` completes in under 2 s.
+  (CI installs `sentence-transformers` and downloads the model today for the app smoke
+  test, so this test runs there too.)
+
+**Definition of done:** the index file is built from the shipped database and committed
+(commit message states the passage count and build time); `python
+analysis/narrative_qa_eval.py` prints 5/5 gated passes and exits 0; every `retrieve`
+call in the eval is under 2 s after model load; `python -m pytest -q` passes; README
+paragraph added; no code outside the file list changed; no model API call anywhere.
+
+**Verify:**
+```bash
+python -m pytest -q
+python -m storage.build_narrative_index --limit 200 --output nq_smoke.pt   # fast smoke run; delete the file afterwards
+python -m storage.build_narrative_index                                     # full build, about 19 min on CPU
+python analysis/narrative_qa_eval.py
+git status --short        # expect only the new files; the tracked index is a new file, not a modification
+```
 
 ### T14b — Cited synthesis through the governed AI path
 
