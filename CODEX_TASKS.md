@@ -1076,19 +1076,93 @@ Paste that output and state that every table and column in it appears in the doc
 
 ### T12b — Release bundle script
 
-**Files:** new `scripts/build_release.py`, `README.md` (a "Data releases" section).
-**Depends on:** T12a merged.
+**Files:** new `scripts/build_release.py` (next to `scripts/export_changefeed.py`), new
+`tests/test_build_release.py`, `README.md` (new `## Data releases` section inserted after
+`## Updating the data`), root `.gitignore` (add `release/`).
+**Depends on:** T12a and T11e merged (they are: `e32d3d7`, `9ed1af8`; archive blob
+`f2aa7a54…` restored on main in `d374360`).
+**Rewritten 2026-09-18** against the repo: the first version assumed a `sqlite3` binary
+(neither machine has one), would have rebuilt the tracked archive on every run (gzip
+embeds a timestamp, so the tracked blob would change each time), named no tests, and left
+`release/` untracked but not ignored (T13b's export already writes there).
 
-**Do:** produce `release/usg-budgets-<YYYY-MM-DD>/` containing the `.db.gz`, the parquet
-files, `DATA_DICTIONARY.md`, a `manifest.json` (`{table: row_count}` plus
-`source_documents` as a list of `{filename, document_type, source_url, content_hash}`),
-and `RELEASE_NOTES.md` with row-count deltas against the previous manifest if one exists.
+**Verified facts (2026-09-18):**
 
-**Definition of done:** the script calls `analysis.ai_budget --reset-runtime` itself; it
-**fails with a non-zero exit** if the grounded-results compliance query in
-`CODEX_HANDOFF.md` invariant 1 returns nonzero; it runs from a clean clone; runtime tables
-are excluded by construction. No GitHub release is created by the script — that stays a
-human action.
+- `data/processed/` tracks: `usg_budgets.db.gz` (blob `f2aa7a54…`, 405 `pe_lineage`
+  rows), **30** parquet files (`r1_1998.parquet` … `r1_2027.parquet`, no 1999, plus
+  `r1_all_years.parquet`; 1.7 MB total), `rdte_deflators_fy2025.csv`, one
+  `semantic_embeddings_*.pt` (regenerable, excluded from the bundle), and a legacy
+  `DoD_Budget_Analysis.xlsx` (excluded).
+- The runtime reset lives only in `analysis/ai_budget.py::main()` behind
+  `--reset-runtime`; there is no importable function. Call it as
+  `subprocess.run([sys.executable, "-m", "analysis.ai_budget", "--reset-runtime"],
+  cwd=APP_DIR, check=True)`.
+- `storage/build_archive.build_archive()` gzips with the current time in the header, so
+  two builds of identical data produce different blobs. **The release script does not
+  rebuild the archive.** It bundles the tracked one and verifies it independently.
+- The compliance query from `CODEX_HANDOFF.md` invariant 1 is
+  `SELECT COUNT(*) FROM ai_cache WHERE task IN ('find_open_source_hits','annual_signal')`.
+  Run it with Python's `sqlite3` module.
+- `storage.db.get_engine()` expands the `.db.gz` on first use, which is what "runs from a
+  clean clone" relies on. `config.PROCESSED_DIR` is `dod_ic_budget_analyzer/data/processed`.
+- Row counts the manifest must reproduce are the `DATA_DICTIONARY.md` table (nine data
+  tables; `pe_lineage` 405; four runtime tables 0).
+
+**Do (in this order, in `main()`):**
+
+1. Expand the working database if needed (`get_engine()`), then run `--reset-runtime`
+   on it via subprocess so a developer who rebuilds afterwards cannot leak runtime rows.
+2. Decompress the **tracked** `usg_budgets.db.gz` to a temporary file (`tempfile`,
+   `gzip`). Every check and count below runs against that copy, never the working `.db`.
+3. Fail with exit code 1, printing which check failed, if any of the four runtime tables
+   (`ai_cache`, `ai_spend`, `ai_user_history`, `search_log`) has rows, or if the
+   compliance query returns nonzero. This is what "runtime tables are excluded by
+   construction" means: the shipped artifact is proven clean, not assumed clean.
+4. Create `<repo root>/release/usg-budgets-<YYYY-MM-DD>/` (`REPO_ROOT` as in
+   `scripts/export_changefeed.py`; `--date` overrides for testing; refuse to overwrite an
+   existing directory unless `--force`). Copy in: the `.db.gz`, the 30 parquet files,
+   `rdte_deflators_fy2025.csv`, `DATA_DICTIONARY.md`.
+5. Write `manifest.json`: `{"built_at": ISO-8601 UTC, "archive_sha256": hex of the .db.gz,
+   "archive_bytes": int, "tables": {name: rows} for the nine data tables,
+   "runtime_tables": {name: 0} for the four, "source_documents": [{"filename",
+   "document_type", "source_url", "content_hash"}] sorted by filename}`.
+6. Write `RELEASE_NOTES.md`: the date, the archive hash, a table of row counts, and a
+   "Changes since <previous date>" table with `table: before -> after (delta)` for every
+   table whose count changed, where "previous" is the newest other
+   `release/usg-budgets-*/manifest.json` by directory name. With no previous manifest,
+   write "First release; no previous manifest to compare."
+7. Print the bundle path and total size. No GitHub release, no upload, no git commands.
+
+Structure the script as pure functions so the tests below need no real archive:
+`archive_checks(connection) -> list[str]` (failure messages, empty when clean),
+`manifest_for(connection, archive_path) -> dict`, `release_notes(previous: dict | None,
+current: dict, date: str) -> str`, plus `main()`.
+
+**Tests (`tests/test_build_release.py`, in-memory SQLite via `storage.db.Base`):**
+`archive_checks` returns `[]` on an empty runtime set and one message naming the table
+when an `ai_cache` row with `task="annual_signal"` is present (the compliance query
+fires) and when a `search_log` row is present; `manifest_for` on a DB with one
+`SourceDocument` and one `ProgramElement` yields the exact key set above with
+`tables["program_elements"] == 1` and one `source_documents` entry; `release_notes(None,
+…)` contains the first-release sentence; `release_notes(prev, cur)` where `pe_lineage`
+goes 433 -> 405 contains the line `pe_lineage: 433 -> 405 (-28)`.
+
+**Definition of done:** `python scripts/build_release.py` from `dod_ic_budget_analyzer/`
+on a clean clone exits 0 and produces the directory above with all six kinds of content;
+its `manifest.json` counts equal the `DATA_DICTIONARY.md` table; a second run the same
+day without `--force` exits 1 with a clear message; `git status --short` after a run is
+empty (`release/` ignored); the README section says what a bundle contains, how to build
+one, and that attaching it to a GitHub release is a manual step. Do not touch `app.py`,
+`build_archive.py`, or the archive.
+
+**Verify:**
+```bash
+python -m pytest -q
+python scripts/build_release.py
+python -c "import json,glob; m=json.load(open(sorted(glob.glob('../release/usg-budgets-*/manifest.json'))[-1])); print(m['tables']); print(m['runtime_tables']); print(len(m['source_documents']), 'source documents')"
+python scripts/build_release.py            # same day, no --force: expect exit 1
+git status --short                          # expect empty
+```
 
 ### T13a — Change feed core
 
