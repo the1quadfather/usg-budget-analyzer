@@ -258,6 +258,25 @@ python -m storage.ingest_dd1416 --years 2028 --download
 rebuilds it. Pre-FY2012 years came from parsed PDFs and are already in the
 shipped database.
 
+## Data releases
+
+A data release bundle contains the tracked compressed SQLite archive, all 30
+R-1 parquet exports, the RDT&E deflator CSV, `DATA_DICTIONARY.md`, a JSON
+manifest with table counts and source-document provenance, and release notes
+that compare row counts with the newest earlier bundle.
+
+Build a verified bundle from the repository root with:
+
+```bash
+cd dod_ic_budget_analyzer
+python scripts/build_release.py
+```
+
+The script scrubs the ignored working database, verifies the tracked archive
+independently, and writes the bundle under `release/`. Attaching that directory
+to a GitHub release remains a manual step; the script does not upload or run Git
+commands.
+
 ## Data sources & honesty notes
 
 - **R-1 exhibits** (comptroller.war.gov): official XLSX for FY2012–FY2027,

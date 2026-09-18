@@ -26,3 +26,6 @@ dod_ic_budget_analyzer/logs/
 # GitHub's 100 MB per-file limit, and it is mostly prose so it stores at about
 # a quarter of that. storage.db.get_engine() expands it on first use.
 dod_ic_budget_analyzer/data/processed/usg_budgets.db
+
+# Generated data release bundles
+release/
