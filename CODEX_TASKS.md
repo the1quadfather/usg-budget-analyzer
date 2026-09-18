@@ -68,7 +68,7 @@ tab-reordering bug reached `main` — it passed the smoke test and nobody clicke
 | T12a Data dictionary | shipped | `DATA_DICTIONARY.md`, 13 tables validated against archive PRAGMA with 0 mismatches; commit `e32d3d7` |
 | T12b Release bundle script | shipped | `scripts/build_release.py` verifies the tracked archive and writes `release/usg-budgets-<date>/` (35 files, manifest matches the dictionary); commit `9fa7f1f` |
 | T14a Local retrieval over narratives | shipped | `analysis/narrative_qa.py`, tracked 26,702-passage index (51 MB with text), eval 5/5 gated at ~14 ms/query; commit `bbfec92` |
-| T10, T14b–T15 | **open** | this document. Next: T14b (spec to be re-verified before hand-off); T10a is research, not a Codex task |
+| T10, T14b–T15 | **open** | this document. Next: T14b (spec re-verified 2026-09-18); T10a is research, not a Codex task |
 
 Database ground truth, queried 2026-09-09:
 
@@ -1432,9 +1432,50 @@ git status --short        # expect only the new files; the tracked index is a ne
 
 ### T14b — Cited synthesis through the governed AI path
 
-**Files:** `analysis/narrative_qa.py`, `analysis/oss_enricher.py` (register the task),
-`analysis/ai_budget_eval.py` (add the task to the governance checks).
-**Depends on:** T14a merged.
+**Files:** `analysis/narrative_qa.py` (types, validator, `answer()`), `analysis/oss_enricher.py`
+(new `GeminiEnricher.narrative_answer()` method, `PROMPT_VERSIONS` entry, `ANSWER_SCHEMA`),
+`config.py` (one `AI_CACHE_TTL_DAYS` entry), `analysis/ai_budget_eval.py` (governance
+checks for the new task), `tests/test_narrative_qa.py` (validator tests). Do not touch
+`app.py` (that is T14c), `analysis/ai_budget.py`, or `config.GROUNDED_TASKS`.
+**Depends on:** T14a merged (it is: commit `bbfec92`).
+**Rewritten 2026-09-18** against the repo: the first version returned an `AIResult` type
+that does not exist, named no task string, no prompt, no schema, no cache-key params,
+no validator rule, and used a `sqlite3` command-line check neither machine has.
+
+**Verified facts (2026-09-18):**
+
+- Every AI task goes through `GeminiEnricher._governed(task, params, user_id,
+  allow_fresh, credits, call, empty, force)` in `analysis/oss_enricher.py`: cache read ->
+  `budget_guard` -> `call()` -> `SpendLedger.record` -> `AICache.put`. It returns
+  `EnrichmentResult` (`payload`, `cached`, `created_at`, `search_suggestions_html`,
+  `blocked`, `cold`, `grounded`, `message`). `call()` must return `(payload, usage)`
+  where `payload` is JSON-serialisable and `usage` comes from `_usage(resp)`. An empty
+  payload (`None`, `[]`, `{}`) is never cached. **There is no `AIResult`; use
+  `EnrichmentResult`.**
+- Cache routing is decided by `config.GROUNDED_TASKS` (`find_open_source_hits`,
+  `annual_signal`). Any other task name goes to the shared `ai_cache`. The new task
+  therefore must simply not be added to that set.
+- Prompt versions live in `oss_enricher.PROMPT_VERSIONS`; TTLs in
+  `config.AI_CACHE_TTL_DAYS` (default 30 days when absent). `adjudicate` is the
+  non-grounded template: `response_mime_type="application/json"`, a `response_schema`
+  dict using Gemini's `OBJECT`/`ARRAY`/`STRING`/`INTEGER`/`NUMBER`/`BOOLEAN` type names,
+  `temperature=0.0`, then `json.loads(resp.text)`.
+- `oss_enricher.available()` is False without a key; `oss_enricher.status()` returns
+  `(ok, message)` with the human-readable reason, which the app already shows.
+- `analysis/ai_budget_eval.py` drives the governed path with a fake client
+  (`GeminiEnricher.__new__`, `enricher.client = _FakeClient()`, `_FakeResp.text` holding
+  the JSON) against a scratch database; no real API spend. Extend it the same way.
+- `retrieve()` (T14a) returns `Passage(pe_number, agency, fiscal_year, project_number,
+  source_file, text, score)`; `index_status()["corpus_hash"]` identifies the index.
+- No test currently imports `oss_enricher`; the validator tests below are pure and need
+  no key and no model.
+
+**Task name:** `narrative_answer`. Register `PROMPT_VERSIONS["narrative_answer"] = 1` and
+`config.AI_CACHE_TTL_DAYS["narrative_answer"] = 365` (temperature 0 over a fixed passage
+set is stable, like `adjudicate`). It is **not** grounded and must not be added to
+`GROUNDED_TASKS`.
+
+**Types and validator (`analysis/narrative_qa.py`, no Streamlit, no network):**
 
 ```python
 @dataclass(frozen=True)
@@ -1443,24 +1484,100 @@ class Citation:
 
 @dataclass(frozen=True)
 class CitedAnswer:
-    sentences: list[tuple[str, list[Citation]]]   # every sentence has ≥ 1 citation
+    sentences: tuple[tuple[str, tuple[Citation, ...]], ...]   # every sentence has >= 1 citation
     refused: bool
     reason: str | None
 
-def answer(question: str, passages: list[Passage], *, user_id: str, allow_fresh: bool) -> AIResult: ...
+    def to_dict(self) -> dict: ...                 # JSON-serialisable; this is what the cache stores
+    @classmethod
+    def from_dict(cls, payload: dict) -> "CitedAnswer": ...
+
+def normalize_ws(text: str) -> str: ...            # collapse runs of whitespace to one space, strip
+def validate_answer(raw: dict, passages: Sequence[Passage]) -> CitedAnswer: ...
+def answer(question: str, passages: Sequence[Passage], *, user_id: str,
+           allow_fresh: bool, credits: int | None = None, force: bool = False,
+           enricher=None) -> EnrichmentResult: ...
 ```
 
-**Definition of done:** the task name is **not** in `config.GROUNDED_TASKS` and results
-go to the shared `ai_cache`; every sentence carries at least one citation whose `quote` is
-a verbatim substring of a retrieved passage, verified in code, otherwise the answer is
-converted to `refused=True` with reason "uncited"; cost is metered in `ai_spend`;
-`ai_budget_eval.py` still passes with the new task included.
+`raw` is the model's JSON: `{"sentences": [{"text": str, "citations": [{"passage": int,
+"quote": str}]}], "refused": bool, "reason": str}`. `validate_answer` is pure and is the
+enforcement point:
+
+- If `raw["refused"]` is true: return `CitedAnswer((), True, raw["reason"] or
+  "model_refused")`.
+- If there are no sentences: `CitedAnswer((), True, "empty")`.
+- For each citation: `passage` must be a 1-based index into `passages`, and
+  `normalize_ws(quote)` must be a substring of `normalize_ws(passage.text)` with
+  `len(quote) >= 20`. A citation that fails is dropped. A sentence left with **zero**
+  valid citations converts the **whole** answer to `CitedAnswer((), True, "uncited")`;
+  never return a partially cited answer.
+- Otherwise resolve each citation to `Citation(pe_number, agency, fiscal_year,
+  source_file, quote)` from the passage and return `refused=False, reason=None`.
+
+`answer()`:
+
+- Whitespace-only question or empty `passages` -> `EnrichmentResult(payload=None,
+  blocked=True, message="Nothing to answer from.")` without touching the enricher.
+- `enricher=None` -> if `oss_enricher.available()` construct `GeminiEnricher()`, else
+  return `EnrichmentResult(payload=None, blocked=True, message=oss_enricher.status()[1])`.
+- Otherwise return `enricher.narrative_answer(question, passages, user_id=user_id,
+  allow_fresh=allow_fresh, credits=credits, force=force)`. The returned
+  `payload` is the `CitedAnswer.to_dict()` dict (or `None`); callers rebuild it with
+  `CitedAnswer.from_dict`.
+
+**Enricher method (`GeminiEnricher.narrative_answer`, pattern `adjudicate`):**
+
+- `params = {"question": normalize_ws(question), "index": index_status()["corpus_hash"][:16],
+  "passages": [sha256(passage.text)[:16] for each passage, in order]}`. Same question
+  over the same retrieved passages hits the shared cache for every user.
+- Prompt: state that the model is answering from the numbered passages only, must quote
+  verbatim, and must set `refused=true` with a reason when the passages do not support
+  an answer. List passages as `[n] PE <pe> [<agency>] FY<fy> <source_file>:` followed by
+  the text. Ask for two to six sentences, each with at least one citation.
+- `ANSWER_SCHEMA`: `OBJECT` with `sentences` (`ARRAY` of `OBJECT{text: STRING,
+  citations: ARRAY of OBJECT{passage: INTEGER, quote: STRING}}`), `refused` (`BOOLEAN`),
+  `reason` (`STRING`); all required. `temperature=0.0`.
+- `call()` returns `(validate_answer(json.loads(resp.text), passages).to_dict(),
+  _usage(resp))`. A refused answer is a non-empty dict and is cached like any other
+  deterministic verdict.
+- Return `self._governed("narrative_answer", params, user_id, allow_fresh, credits,
+  call, empty=None, force=force)`.
+
+**Governance checks to add to `analysis/ai_budget_eval.py`** (fake client, two fake
+`Passage` objects with known text):
+
+1. `"narrative_answer" not in config.GROUNDED_TASKS`.
+2. A fresh call with a fake response whose quote is a real substring: exactly one API
+   call, `payload["refused"] is False`, one sentence with one citation whose `pe_number`
+   matches the cited passage.
+3. The same call for a different `user_id`: zero additional API calls and `cached` is
+   True (shared table).
+4. A fake response whose quote is **not** in any passage: `payload["refused"] is True`
+   and `payload["reason"] == "uncited"`.
+5. The existing "shared table holds no grounded tasks" check still passes after these.
+6. The ledger gained rows for the task and its cost is under one cent for the fake
+   usage.
+
+**Tests (`tests/test_narrative_qa.py`, pure, added to the existing file):** `validate_answer`
+with two synthetic passages: exact quote resolves to the right `Citation`; a quote that
+differs only in internal whitespace resolves; a quote shorter than 20 characters is
+dropped and, being the only one, yields `uncited`; a `passage` index of 0 or 3 with two
+passages yields `uncited`; `raw["refused"]=True` passes through with its reason; empty
+`sentences` yields `empty`; `to_dict`/`from_dict` round-trip is equal.
+
+**Definition of done:** the task is not in `GROUNDED_TASKS` and its results land in the
+shared `ai_cache`; every sentence carries at least one citation whose quote is a
+verbatim (whitespace-normalised) substring of a retrieved passage, verified in code,
+otherwise the answer is `refused=True, reason="uncited"`; cost is metered in `ai_spend`;
+`python analysis/ai_budget_eval.py` passes with the six new checks; `python -m pytest -q`
+passes; no live API call is made by any test or eval.
 
 **Verify:**
 ```bash
-python analysis/ai_budget_eval.py
-sqlite3 data/processed/usg_budgets.db "SELECT COUNT(*) FROM ai_cache WHERE task IN ('find_open_source_hits','annual_signal');"   # must be 0
 python -m pytest -q
+python analysis/ai_budget_eval.py
+python -c "import sqlite3; c=sqlite3.connect('data/processed/usg_budgets.db'); print(c.execute(\"SELECT COUNT(*) FROM ai_cache WHERE task IN ('find_open_source_hits','annual_signal')\").fetchone()[0])"   # must print 0
+python -c "import config; from analysis.oss_enricher import PROMPT_VERSIONS; print('narrative_answer' in PROMPT_VERSIONS, 'narrative_answer' in config.GROUNDED_TASKS, config.AI_CACHE_TTL_DAYS['narrative_answer'])"   # True False 365
 ```
 
 ### T14c — Ask-the-corpus UI
