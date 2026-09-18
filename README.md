@@ -241,6 +241,14 @@ python -m analysis.ai_budget --reset-runtime          # never ship AI runtime ro
 python -m storage.build_archive                       # atomic gzip rebuild
 ```
 
+R-2 narrative search uses a separate, tracked passage index so long narratives
+are retrieved without truncation. Rebuild it after changing the shipped
+narrative corpus:
+
+```bash
+python -m storage.build_narrative_index
+```
+
 Service-branch R-2 narratives (Army, Navy, Air Force, Space Force) come from
 their PDF justification books:
 
