@@ -69,7 +69,7 @@ tab-reordering bug reached `main` — it passed the smoke test and nobody clicke
 | T12b Release bundle script | shipped | `scripts/build_release.py` verifies the tracked archive and writes `release/usg-budgets-<date>/` (35 files, manifest matches the dictionary); commit `9fa7f1f` |
 | T14a Local retrieval over narratives | shipped | `analysis/narrative_qa.py`, tracked 26,702-passage index (51 MB with text), eval 5/5 gated at ~14 ms/query; commit `bbfec92` |
 | T14b Cited synthesis | shipped | `narrative_answer` task on the governed path, `validate_answer` enforces verbatim quotes, 6 governance checks (57/57); commit `3bb54cc` |
-| T10, T14c–T15 | **open** | this document. Next: T14c (spec to be re-verified before hand-off); T10a is research, not a Codex task |
+| T10, T14c–T15 | **open** | this document. Next: T14c (spec re-verified 2026-09-18); T10a is research, not a Codex task |
 
 Database ground truth, queried 2026-09-09:
 
@@ -1583,15 +1583,122 @@ python -c "import config; from analysis.oss_enricher import PROMPT_VERSIONS; pri
 
 ### T14c — Ask-the-corpus UI
 
-**Files:** `app.py` (Program Finder tab, above the search box, an expander "Ask the
-justification books").
-**Depends on:** T14b merged.
+**Files:** `app.py` (Program Finder tab, between `st.header("Find a program")` and the
+program search `st.text_input`), `tests/test_app_smoke.py` (one lookup changed, one test
+added). Nothing else: no change to `analysis/narrative_qa.py`, `analysis/oss_enricher.py`,
+`config.py`, or any tab label or order.
+**Depends on:** T14b merged (it is: commit `3bb54cc`).
+**Rewritten 2026-09-18** against the repo. The first version said "cold cache shows a
+button", "warm cache auto-renders", and "degrade to the same caption", without naming the
+helpers that already do each of those things, and without noticing that inserting a text
+input above the search box breaks the smoke test's `text_input[0]` lookup.
 
-**Definition of done:** cold cache shows a button naming the source ("Answer from R-2
-narratives (AI)"); warm cache auto-renders with an "as of" caption; each sentence renders
-its citations as `PE … · FY… · file`; a refusal renders as an `st.info` with the reason;
-clicked through in a browser with AI disabled (the section must degrade to the same
-caption the "In the News" tab uses).
+**Verified facts (2026-09-18):**
+
+- `render_ai_result(res, render_fn, empty_msg)` in `app.py` already renders an
+  `EnrichmentResult` honestly: `blocked` -> `st.info(res.message)`; `empty` ->
+  `st.info(empty_msg)`; otherwise `render_fn(res.payload)`; and when `res.cached` it adds
+  the caption `Saved analysis from YYYY-MM-DD. Re-run below for a fresh look.` **That is
+  the "as of" caption; reuse it.** It also warns when `res.grounded` is False; the
+  narrative task sets `grounded` from `_usage()`, which reads `grounding_metadata`, so a
+  non-grounded answer arrives with `grounded=False`. Pass `dataclasses.replace(res,
+  grounded=True)` to the renderer for this task (it is not a search-backed task and the
+  warning text is about web search).
+- `get_enricher()` (`@st.cache_resource`) returns `None` without a key or SDK. The "In
+  the News" block (around `app.py:1788`) shows one of two captions, keyed on
+  `oss_enricher.status()[1]` being `"package"` or anything else. T14c introduces
+  `_ai_disabled_caption()` in `app.py` that returns those exact two strings, uses it in
+  the new section, and replaces the two literal captions in the News block with the same
+  call. No other change to the News block.
+- `current_user_id()` gives the billing identity; other AI calls pass no `credits`
+  (config default). The cache-only probe pattern is `allow_fresh=False` first; a `cold`
+  result means "nothing saved, offer a button"; the button re-calls with
+  `allow_fresh=True` inside `st.spinner`.
+- `analysis.narrative_qa.retrieve()` loads the model with `local_files_only=True`. The
+  weights reach the local cache only when `load_matching_models()` (the finder's
+  `@st.cache_resource` loader, which constructs `SemanticMatcher` and downloads the
+  model) has run at least once in that environment. On Community Cloud the first visitor
+  who asks a question before anyone has searched would otherwise hit an `OSError`.
+  **Rule:** the new section's own `@st.cache_resource` accessor `load_corpus_search()`
+  calls `load_matching_models()` first, then `narrative_qa.retrieve("warm-up", k=1)`
+  inside `try/except Exception`, and returns `True` on success or the exception's class
+  name on failure; the section renders a caption naming the failure and stops when it is
+  not `True`.
+- `tests/test_app_smoke.py::test_program_finder_rerun_keeps_tab_content_mapped` finds the
+  search box with `app.text_input[0]`. The new question box sits above it, so that lookup
+  must become `app.text_input(key="program_query")` (the box already has that key).
+  AppTest supports lookup by key.
+- The model is in this machine's Hugging Face cache and CI downloads it during the app
+  smoke test, so an AppTest that asks a question works in both places; give it
+  `default_timeout=120` because the first model load takes about 30 s.
+- Permalinks to a PE use the query string `?tab=finder&pe=<pe>&agency=<agency>` with
+  `urllib.parse.quote(..., safe="?=&")`, as the T13b change feed does.
+
+**Do (inside `with tab_finder:`, after the header, before the search box):**
+
+```
+with st.expander("Ask the justification books", expanded=False):
+    st.caption("Searches the R-2 narrative text locally (free). The AI answer is optional and metered.")
+    question = st.text_input("Question", key="corpus_question",
+                             placeholder="e.g. what is the Army doing on launched effects?")
+```
+
+When `question.strip()` is non-empty:
+
+1. `ready = load_corpus_search()`; if not `True`, `st.caption(f"Local passage search is unavailable ({ready}).")` and stop.
+2. `passages = narrative_qa.retrieve(question, k=8)` under `st.spinner("Searching narratives...")`.
+   If empty, `st.info("No narrative passages matched.")` and stop.
+3. Render `with st.expander(f"Passages considered ({len(passages)})")`: one block per
+   passage with a markdown line `**PE <pe>** [<agency>] · FY<fy> · <source_file> · score <score:.2f>`
+   where the PE is a link to its finder permalink, followed by the passage text via
+   `st.write(escape_dollars(text))`. This is local and free; it always renders.
+4. `enricher = get_enricher()`. If `None`: `st.caption(_ai_disabled_caption())` and stop.
+5. `res = narrative_qa.answer(question, passages, user_id=current_user_id(), allow_fresh=False, enricher=enricher)`.
+   If `res.cold`: `st.caption("No saved answer for this question yet.")` and a button
+   labelled **"Answer from R-2 narratives (AI)"**; on click, re-call with
+   `allow_fresh=True` inside `st.spinner("Reading the passages...")` and render.
+   Otherwise render immediately (this is the warm path; the renderer adds the "Saved
+   analysis from" caption) and offer a **"Re-answer (AI)"** button that calls with
+   `allow_fresh=True, force=True`.
+6. Rendering, via `render_ai_result(dataclasses.replace(res, grounded=True), _render_cited_answer, "No answer produced.")`
+   where `_render_cited_answer(payload)` rebuilds `CitedAnswer.from_dict(payload)`; if
+   `refused`, `st.info(f"No cited answer: {reason}")`; else for each sentence
+   `st.markdown(escape_dollars(text))` followed by one caption line per citation in the
+   form `PE <pe_number> · FY<fiscal_year> · <source_file>` with the PE linked to its
+   permalink, and the quote in an `st.expander("Quoted text")` under it via `st.write`.
+
+Keys: `corpus_question`, buttons keyed `corpus_answer::<sha256(question)[:12]>` and
+`corpus_reanswer::<same>` so two questions never share a button state. Do not add a
+query parameter for the question. Do not reorder or relabel any `st.tabs()` call.
+
+**Tests (`tests/test_app_smoke.py`):**
+
+- Change the existing `app.text_input[0]` lookup to `app.text_input(key="program_query")`.
+- New `test_ask_the_corpus_renders_passages_without_a_key(monkeypatch)`: set
+  `HF_HUB_OFFLINE=1`, `monkeypatch.delenv` both `GEMINI_API_KEY` and `GOOGLE_API_KEY`
+  (`raising=False`), `AppTest.from_file(..., default_timeout=120)`, query param
+  `tab=finder`, run, then `app.text_input(key="corpus_question").input("Skyborg autonomous aircraft vanguard program").run()`;
+  assert `not app.exception`; assert some expander label starts with `"Passages considered ("`;
+  assert `"0603032F"` appears in the markdown of that expander; assert no button is
+  labelled `"Answer from R-2 narratives (AI)"`; assert the main tab labels are unchanged
+  and `app.session_state["main_tab"] == "Program Finder"`.
+
+**Definition of done:** with no key, the section retrieves and lists passages and shows
+the same disabled-AI caption the News tab shows; with a key, a cold question shows the
+"Answer from R-2 narratives (AI)" button and a warm one auto-renders with the "Saved
+analysis from" caption; every rendered sentence lists its citations as `PE … · FY… ·
+file` with the PE linked; a refusal renders as `st.info` with the reason; the smoke
+tests pass; **clicked through in a real browser with AI disabled** (run with
+`GEMINI_API_KEY` and `GOOGLE_API_KEY` unset): expander opens, a question lists passages,
+the caption appears, the program search box below still works, and the Program Finder
+tab stays selected across the rerun.
+
+**Verify:**
+```bash
+python -m pytest -q
+python analysis/ai_budget_eval.py
+python -m streamlit run app.py --server.port 8501     # then click through as described above and describe what you saw
+```
 
 ### T15a — Structured-fact schema
 
