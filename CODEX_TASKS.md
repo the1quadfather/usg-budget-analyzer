@@ -67,7 +67,8 @@ tab-reordering bug reached `main` — it passed the smoke test and nobody clicke
 | T11e Lineage PE validation | shipped | both detectors reject unknown endpoints (11 predecessor, 17 successor); `pe_lineage` 433 -> 405; dictionary and handoff updated. Codex commits `b1a3885` + `9ed1af8` (on `origin/codex/t11e`); landed on main as `6030a08` (squashed by a failed working-tree update) + archive restore `d374360` |
 | T12a Data dictionary | shipped | `DATA_DICTIONARY.md`, 13 tables validated against archive PRAGMA with 0 mismatches; commit `e32d3d7` |
 | T12b Release bundle script | shipped | `scripts/build_release.py` verifies the tracked archive and writes `release/usg-budgets-<date>/` (35 files, manifest matches the dictionary); commit `9fa7f1f` |
-| T10, T14–T15 | **open** | this document. Next: T14a (spec re-verified 2026-09-18); T10a is research, not a Codex task |
+| T14a Local retrieval over narratives | shipped | `analysis/narrative_qa.py`, tracked 26,702-passage index (51 MB with text), eval 5/5 gated at ~14 ms/query; commit `bbfec92` |
+| T10, T14b–T15 | **open** | this document. Next: T14b (spec to be re-verified before hand-off); T10a is research, not a Codex task |
 
 Database ground truth, queried 2026-09-09:
 
