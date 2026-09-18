@@ -98,6 +98,10 @@ says `_m` or `_millions`.
 - Tests go in `tests/test_<module>.py`. A parser task ships a fixture under
   `tests/fixtures/` small enough to read by eye.
 - Row counts before and after an ingest go in the commit message.
+- Any task that rebuilds `data/processed/usg_budgets.db.gz` also updates
+  `DATA_DICTIONARY.md` (T12a): the row-count table, every enumeration count that changed,
+  and the archive blob hash and commit in its header. The dictionary must never disagree
+  with the shipped archive. List it in the task's file list.
 
 ---
 
@@ -889,30 +893,49 @@ through in a browser.
 ### T11e — Validate lineage PE numbers against the database
 
 **Files:** `analysis/lineage.py` (both detectors), `tests/test_lineage.py`,
-`analysis/lineage_eval.py` (docstring numbers), `data/processed/usg_budgets.db.gz`
-(rebuilt via `storage/ingest_lineage.py`), `CODEX_HANDOFF.md` §1 (row count).
-**Depends on:** T11d merged (it is: commit `af48a3f`, merged 2026-09-16).
+`analysis/lineage_eval.py` (docstring numbers), `storage/ingest_lineage.py` (only if the
+returned counts dict gains the rejection numbers), `data/processed/usg_budgets.db.gz`
+(rebuilt), `CODEX_HANDOFF.md` §1 (`pe_lineage` row), **`DATA_DICTIONARY.md`** (row-count
+table line for `pe_lineage`, the `relation`/`method` counts in its `pe_lineage` section,
+and the archive blob hash and "last rebuilt in commit" line in its header).
+**Depends on:** T11d and T12a merged (they are: `af48a3f`, `e32d3d7`).
+**Revised 2026-09-17** after Codex correctly stopped: the first version omitted
+`DATA_DICTIONARY.md`, which T12a had just pinned at 433 rows, and listed the unknown
+endpoints as examples rather than in full. Both fixed below.
 
-**Verified facts (shipped database, 2026-09-16):** of the 433 `pe_lineage` rows, 11 have
-a `predecessor_pe` and 17 have a `successor_pe` that appears in neither
-`program_elements` nor the funding series. Two classes:
+**Verified facts (shipped archive, 2026-09-17):** of the 433 `pe_lineage` rows, 28 have an
+endpoint absent from `program_elements.pe_number`: 11 edges with an unknown predecessor,
+17 with an unknown successor, none with both. All 28 are `narrative`; both `ba_renumber`
+edges survive. The complete lists (membership rule: `pe_number IN (SELECT pe_number FROM
+program_elements)`):
 
-- **Book typos** the regex accepts because `\d{7}[A-Z0-9]{1,3}` also matches a run of
-  eight or nine digits: `06030216F -> 0603216F` (AF FY2021 Vol I; the sentence is
-  "transferred from PE 06030216F ... to PE 0602201F", so the edge is a phantom
-  predecessor into the narrative's own PE), `06005053A`, `06022787A`, `0622144A`,
-  `0622145A`, `06020147A`, `06020148A`, `03031113F`, `030205208M`, `0270344A`.
-- **Real PEs outside the R-1 corpus:** Defense Health Program elements with a `DHA`
-  suffix (`0602115DHA`, `0603115DHA`, `0605013DHA`, `0605145DHA`, `0604110DHA`) and
-  Space Force successors not yet in the funding series (`1206402SF`, `1204857F`).
+- Unknown predecessors (11 distinct): `0270344A`, `030205208M`, `06005053A`,
+  `0602115DHA`, `06022787A`, `06030216F`, `0603115DHA`, `0603456A`, `0605013DHA`,
+  `0605145DHA`, `0622144A`.
+- Unknown successors (16 distinct, 17 edges): `0204229A`, `0205471N`, `03031113F`,
+  `06020147A`, `06020148A`, `0603017N`, `0603115DHA`, `0604110DHA`, `0605145DHA`,
+  `0605346A`, `0622144A`, `0622145A`, `0655333A`, `1201240F`, `1204857F`, `1206402SF`.
+
+Two classes, for the report only (the rule treats them the same): book typos the regex
+accepts because `\d{7}[A-Z0-9]{1,3}` also matches eight or nine digits (`06030216F`,
+`030205208M`, `03031113F`, ...), and real PEs outside the R-1 corpus (Defense Health
+Program `DHA` suffixes, Space Force successors not yet in the funding series).
+
+**Expected after the filter (computed from the archive, 2026-09-17):** `pe_lineage` 433 ->
+**405** (2 `ba_renumber` + 403 `narrative`); 404 distinct pairs; eval recall 10/10 (every
+golden PE exists in `program_elements`, checked), precision 10/11 (N1 `0603030F ->
+0602102F` still emitted, both PEs exist), 393 unlabelled pairs, year checks 10/10.
 
 **Definition of done:** an edge is emitted only when **both** PE numbers exist in
-`program_elements`; rejected edges are counted and printed by method and reason
-(`unknown_predecessor`, `unknown_successor`) so coverage is stated. Do not "repair"
-typos by editing the captured number. The self-reference guard stays. Update the eval
-docstring's expected counts to the new numbers and keep recall 10/10 (all ten golden
-positives use PEs that exist). Rebuild the archive; commit message states the
-`pe_lineage` before -> after count. Do not touch `app.py` or `trend_tracker.py`.
+`program_elements`; rejected edges are counted per method and reason
+(`unknown_predecessor`, `unknown_successor`) and printed by `storage/ingest_lineage.py`
+so coverage is stated. Do not "repair" typos by editing the captured number. The
+self-reference guard stays. `tests/test_lineage.py` gains a case with one unknown
+endpoint that is rejected and counted. The eval docstring states the new expected
+numbers above. Rebuild the archive (`--reset-runtime`, then `build_archive`); the commit
+message states `pe_lineage` 433 -> 405. `CODEX_HANDOFF.md` §1 and `DATA_DICTIONARY.md`
+are updated to 405 / 403 and to the new archive blob hash and commit. Do not touch
+`app.py` or `trend_tracker.py`.
 
 **Verify:**
 ```bash
@@ -922,6 +945,7 @@ python -m storage.ingest_lineage
 python -m storage.ingest_lineage            # second run: identical counts
 python -m analysis.ai_budget --reset-runtime
 python -m storage.build_archive
+git rev-parse HEAD:dod_ic_budget_analyzer/data/processed/usg_budgets.db.gz   # after commit; paste into DATA_DICTIONARY.md
 ```
 
 ---
