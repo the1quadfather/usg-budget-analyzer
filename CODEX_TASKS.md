@@ -892,16 +892,22 @@ through in a browser.
 
 ### T11e — Validate lineage PE numbers against the database
 
-**Files:** `analysis/lineage.py` (both detectors), `tests/test_lineage.py`,
-`analysis/lineage_eval.py` (docstring numbers), `storage/ingest_lineage.py` (only if the
-returned counts dict gains the rejection numbers), `data/processed/usg_budgets.db.gz`
-(rebuilt), `CODEX_HANDOFF.md` §1 (`pe_lineage` row), **`DATA_DICTIONARY.md`** (row-count
-table line for `pe_lineage`, the `relation`/`method` counts in its `pe_lineage` section,
-and the archive blob hash and "last rebuilt in commit" line in its header).
+**Files:** `analysis/lineage.py` (both detectors plus one new helper), `tests/test_lineage.py`,
+`tests/test_ingest_lineage.py`, `storage/ingest_lineage.py`, `analysis/lineage_eval.py`
+(docstring numbers), `data/processed/usg_budgets.db.gz` (rebuilt), `CODEX_HANDOFF.md` §1
+(`pe_lineage` row), **`DATA_DICTIONARY.md`** (row-count table line for `pe_lineage`, the
+`relation`/`method` counts in its `pe_lineage` section, and the archive blob hash and
+"last rebuilt in commit" line in its header).
 **Depends on:** T11d and T12a merged (they are: `af48a3f`, `e32d3d7`).
 **Revised 2026-09-17** after Codex correctly stopped: the first version omitted
 `DATA_DICTIONARY.md`, which T12a had just pinned at 433 rows, and listed the unknown
-endpoints as examples rather than in full. Both fixed below.
+endpoints as examples rather than in full.
+**Revised 2026-09-18** after a third correct stop: `tests/test_ingest_lineage.py` and the
+narrative tests in `tests/test_lineage.py` build in-memory databases with narratives but
+no `program_elements` rows, so the membership rule would reject every fixture edge. Both
+test files are now in scope, the rows each test must seed are listed, and the API for
+carrying rejection counts is fixed below so the ingest test's exact-dict assertion is
+deterministic.
 
 **Verified facts (shipped archive, 2026-09-17):** of the 433 `pe_lineage` rows, 28 have an
 endpoint absent from `program_elements.pe_number`: 11 edges with an unknown predecessor,
@@ -926,12 +932,51 @@ Program `DHA` suffixes, Space Force successors not yet in the funding series).
 golden PE exists in `program_elements`, checked), precision 10/11 (N1 `0603030F ->
 0602102F` still emitted, both PEs exist), 393 unlabelled pairs, year checks 10/10.
 
+**API (fixed, so callers and tests agree):**
+
+- `analysis/lineage.py` gains `known_pe_numbers(session) -> frozenset[str]` (distinct
+  `program_elements.pe_number`) and both detectors gain one keyword-only parameter,
+  `rejections: dict[str, int] | None = None`. Each detector filters its edges through the
+  known set before returning; when `rejections` is a dict, the detector adds its counts
+  into it under the keys `unknown_predecessor` and `unknown_successor` (an edge whose
+  predecessor is unknown counts once under `unknown_predecessor` even if the successor is
+  also unknown; the archive has no such edge today). Signatures otherwise unchanged, so
+  `app.py`, `trend_tracker.py`, and `lineage_eval.py` need no edits beyond the eval
+  docstring.
+- `storage/ingest_lineage.ingest_lineage(session)` passes one dict per detector and
+  returns exactly `{"ba_renumber": n, "narrative": n, "total": n,
+  "rejected_unknown_predecessor": n, "rejected_unknown_successor": n}` (the last two
+  summed across both detectors). `main()` prints those two rejection counts on their own
+  line after the existing before/after line.
+
+**Tests.** `ProgramElement.source_document_id` and `SourceDocument.publication_year` are
+`NOT NULL`, so each test class's `setUp` creates one `SourceDocument(filename=...,
+document_type="R1", publication_year=2027)` and a helper `_add_program_element(pe_number,
+agency)` that inserts a `ProgramElement` pointing at it (the `BudgetActivityRenumberTests`
+class already seeds PEs through `_add_funded_pe`; leave it). Seed these before running
+the detector:
+
+- `NarrativeLineageTests.test_fixture_yields_three_directed_evidence_backed_edges`:
+  `0603176BR`, `0603160BR` (Defense-Wide); `0602182A`, `0602146A`, `0602144A`,
+  `0605001A`, `0605002A` (Army); `0604659N`, `0105519N` (Navy). Assertions unchanged.
+- `test_two_digit_fiscal_year_is_2000_based`: `0605003A`, `0605004A`.
+- `test_pe_suffix_must_use_uppercase_alphanumerics`: `0605005A`, `0605006A`, `0605008A`,
+  so the empty result is still caused by the regex, not by membership.
+- `test_duplicate_edge_keeps_first_source_file_and_row_id`: `0605010A`, `0605011A`.
+- New `test_unknown_endpoint_is_rejected_and_counted`: seed `0605003A` only, add the
+  two-digit-FY narrative, call with `rejections={}`; assert `edges == []` and
+  `rejections == {"unknown_successor": 1}`.
+- `tests/test_ingest_lineage.py`: seed the nine fixture PEs above in `setUp`; the existing
+  test now asserts the five-key dict with both rejection counts 0 and still 3 rows with
+  identical hashes across two runs. New `test_unseeded_successor_is_rejected`: seed all
+  fixture PEs except `0105519N`; assert `{"ba_renumber": 0, "narrative": 2, "total": 2,
+  "rejected_unknown_predecessor": 0, "rejected_unknown_successor": 1}` and 2 rows.
+
 **Definition of done:** an edge is emitted only when **both** PE numbers exist in
 `program_elements`; rejected edges are counted per method and reason
 (`unknown_predecessor`, `unknown_successor`) and printed by `storage/ingest_lineage.py`
 so coverage is stated. Do not "repair" typos by editing the captured number. The
-self-reference guard stays. `tests/test_lineage.py` gains a case with one unknown
-endpoint that is rejected and counted. The eval docstring states the new expected
+self-reference guard stays. Tests as specified above. The eval docstring states the new expected
 numbers above. Rebuild the archive (`--reset-runtime`, then `build_archive`); the commit
 message states `pe_lineage` 433 -> 405. `CODEX_HANDOFF.md` §1 and `DATA_DICTIONARY.md`
 are updated to 405 / 403 and to the new archive blob hash and commit. Do not touch
