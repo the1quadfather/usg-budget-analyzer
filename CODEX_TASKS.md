@@ -65,7 +65,8 @@ tab-reordering bug reached `main` — it passed the smoke test and nobody clicke
 | T13b Change feed surface | shipped | "What changed" on Budget Trends, `scripts/export_changefeed.py` (576 events PB2026 -> PB2027, all fields validated); permalinks and selector edge cases clicked through; commit `fc91681` |
 | T11d Lineage in the funding chart | shipped | `TrendTracker.get_pe_history_with_lineage()`, segments + seam rules + evidence expanders on Program Finder → Funding; clicked through on PE 0603216F and 0609345A; commit `af48a3f` |
 | T12a Data dictionary | shipped | `DATA_DICTIONARY.md`, 13 tables validated against archive PRAGMA with 0 mismatches; commit `e32d3d7` |
-| T10, T11e, T12b, T14–T15 | **open** | this document. Next: T11e, then T12b; T10a is research, not a Codex task |
+| T12b Release bundle script | shipped | `scripts/build_release.py` verifies the tracked archive and writes `release/usg-budgets-<date>/` (35 files, manifest matches the dictionary); commit `9fa7f1f` |
+| T10, T14–T15 | **open** | this document. Next: T14a (spec to be re-verified before hand-off); T10a is research, not a Codex task |
 
 Database ground truth, queried 2026-09-09:
 
