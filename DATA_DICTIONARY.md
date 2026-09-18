@@ -2,10 +2,10 @@
 
 This document describes the SQLite database shipped with the repository at
 `dod_ic_budget_analyzer/data/processed/usg_budgets.db.gz`. The snapshot was checked on
-2026-09-16 at repository commit `4e6d2d68ca7bc820a24ce2e64c109a621dfe2253`
-(`origin/main` when inspected). The archive blob is
-`e8602b0b41d51718d39c1247800d6391d3508405`; it was last rebuilt in commit
-`6228a7d80ca408a54d94afc16c528a31e28b00a9`. The archive contains 13 tables and 43
+2026-09-18 at repository commit `b1a3885e4bec042db6ad5709c6f862844fc5bdd8`
+(`codex/t11e` when inspected). The archive blob is
+`f2aa7a54e64453e05351a4a8f928d961a85295ce`; it was last rebuilt in commit
+`b1a3885e4bec042db6ad5709c6f862844fc5bdd8`. The archive contains 13 tables and 43
 indexes.
 
 The nine data tables below ship with records. Four additional runtime table schemas ship
@@ -26,7 +26,7 @@ database. Runtime activity can add rows to a working database after it is expand
 | `pe_congressional_actions` | 26,544 | House and Senate NDAA committee-report authorization tables, FY2012–FY2027 |
 | `pe_narratives` | 18,268 | R-2 justification books in XML and PDF |
 | `pe_accomplishments` | 101,219 | R-2 accomplishment and planned-program line items |
-| `pe_lineage` | 433 | Derived from R-1 funding and R-2 narratives |
+| `pe_lineage` | 405 | Derived from R-1 funding and R-2 narratives |
 | `ai_cache` | 0 | Runtime only; reset before every archive build |
 | `ai_spend` | 0 | Runtime only; reset before every archive build |
 | `ai_user_history` | 0 | Runtime only; reset before every archive build |
@@ -284,9 +284,9 @@ Evidence-backed predecessor/successor relationships between Program Elements. Th
 derived table, not a source exhibit: `analysis/lineage.py` derives it from
 `funding_lines` and `pe_narratives`, and `storage/ingest_lineage.py` rebuilds it.
 
-`relation` contains `transferred` (431 rows) and `renumbered` (2). The analysis-layer
+`relation` contains `transferred` (403 rows) and `renumbered` (2). The analysis-layer
 `Relation` type also permits `split` and `merged`, but no current detector emits them.
-`method` contains `narrative` (431 rows) and `ba_renumber` (2).
+`method` contains `narrative` (403 rows) and `ba_renumber` (2).
 
 | Column | SQL type | Nullable | Unit or meaning |
 |---|---|:---:|---|

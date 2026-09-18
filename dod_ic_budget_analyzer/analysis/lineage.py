@@ -193,6 +193,12 @@ def _load_funding_series(
     return series
 
 
+def known_pe_numbers(session: Session) -> frozenset[str]:
+    """Return every distinct PE number represented by program_elements."""
+    statement = select(ProgramElement.pe_number).distinct()
+    return frozenset(session.execute(statement).scalars())
+
+
 def _gap_is_eligible(
     predecessor: _FundingSeries,
     successor: _FundingSeries,
@@ -214,7 +220,11 @@ def _gap_is_eligible(
     return successor_first_fy, gap
 
 
-def detect_ba_renumbering(session: Session) -> list[LineageEdge]:
+def detect_ba_renumbering(
+    session: Session,
+    *,
+    rejections: dict[str, int] | None = None,
+) -> list[LineageEdge]:
     """Find PEs whose budget-activity digits changed at a funding boundary.
 
     Candidate PEs must share an agency and every PE character except positions
@@ -273,7 +283,7 @@ def detect_ba_renumbering(session: Session) -> list[LineageEdge]:
                 ),
             ))
 
-    return sorted(
+    sorted_edges = sorted(
         edges,
         key=lambda edge: (
             edge.predecessor_pe,
@@ -282,6 +292,24 @@ def detect_ba_renumbering(session: Session) -> list[LineageEdge]:
             edge.successor_agency,
         ),
     )
+    known = known_pe_numbers(session)
+    accepted = []
+    for edge in sorted_edges:
+        unknown_predecessor = edge.predecessor_pe not in known
+        unknown_successor = edge.successor_pe not in known
+        if unknown_predecessor or unknown_successor:
+            if rejections is not None:
+                if unknown_predecessor:
+                    rejections["unknown_predecessor"] = (
+                        rejections.get("unknown_predecessor", 0) + 1
+                    )
+                if unknown_successor:
+                    rejections["unknown_successor"] = (
+                        rejections.get("unknown_successor", 0) + 1
+                    )
+            continue
+        accepted.append(edge)
+    return accepted
 
 
 def _iter_narrative_rows(
@@ -353,7 +381,11 @@ def _first_fiscal_year(sentence: str, row_fiscal_year: int) -> tuple[int, float]
     return int(year), 0.9
 
 
-def detect_narrative_transfers(session: Session) -> list[LineageEdge]:
+def detect_narrative_transfers(
+    session: Session,
+    *,
+    rejections: dict[str, int] | None = None,
+) -> list[LineageEdge]:
     """Find PE transfers stated explicitly in R-2 narrative sentences.
 
     ``from`` references make the cited PE the predecessor; ``to``, ``into``,
@@ -408,4 +440,21 @@ def detect_narrative_transfers(session: Session) -> list[LineageEdge]:
                     content_hash=content_hash,
                 )
 
-    return list(edges_by_hash.values())
+    known = known_pe_numbers(session)
+    accepted = []
+    for edge in edges_by_hash.values():
+        unknown_predecessor = edge.predecessor_pe not in known
+        unknown_successor = edge.successor_pe not in known
+        if unknown_predecessor or unknown_successor:
+            if rejections is not None:
+                if unknown_predecessor:
+                    rejections["unknown_predecessor"] = (
+                        rejections.get("unknown_predecessor", 0) + 1
+                    )
+                if unknown_successor:
+                    rejections["unknown_successor"] = (
+                        rejections.get("unknown_successor", 0) + 1
+                    )
+            continue
+        accepted.append(edge)
+    return accepted

@@ -58,7 +58,7 @@ numbers are correct; the prose in README is not always.**
 | `pe_narratives` | 1,383 distinct PEs (67% narrative coverage) |
 | `pe_congressional_actions` | 26,544 rows, FY2012–FY2027 |
 | `pe_execution` | 79,677 rows from 381 DD 1416 workbooks, report dates 2012-12-31 to 2026-03-31 **[verified 2026-09-10]** |
-| `pe_lineage` | 433 rows: 2 `ba_renumber`, 431 `narrative`; 432 distinct predecessor/successor pairs **[verified 2026-09-16]** |
+| `pe_lineage` | 405 rows: 2 `ba_renumber`, 403 `narrative`; 404 distinct predecessor/successor pairs **[verified 2026-09-18]** |
 | `procurement_lines` | 5,253 rows (2,589 PB2026 + 2,664 PB2027), FY2024–FY2027, one row per workbook cost-type line; key is `(bli, agency, appropriation, budget_activity, line_number, cost_type, cost_type_title, fiscal_year, funding_type, pb_cycle, source_document_id)` **[verified 2026-09-12]** |
 | `source_documents` | 412: 29 `R1`, 381 `DD1416`, 2 `P1` **[verified 2026-09-12]** |
 

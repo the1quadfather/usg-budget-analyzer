@@ -122,6 +122,12 @@ class NarrativeLineageTests(unittest.TestCase):
         self.engine = create_engine("sqlite:///:memory:")
         Base.metadata.create_all(self.engine)
         self.session = Session(self.engine)
+        self.document = SourceDocument(
+            filename="synthetic_r2.xml",
+            document_type="R1",
+            publication_year=2027,
+        )
+        self.session.add(self.document)
         self.cases = json.loads(LINEAGE_FIXTURE.read_text(encoding="utf-8"))
 
     def tearDown(self):
@@ -147,6 +153,14 @@ class NarrativeLineageTests(unittest.TestCase):
             source_file=case["source_file"],
         ))
 
+    def _add_program_element(self, pe_number: str, agency: str) -> None:
+        self.session.add(ProgramElement(
+            source_document=self.document,
+            pe_number=pe_number,
+            program_name=f"Synthetic {pe_number}",
+            agency=agency,
+        ))
+
     def test_fixture_yields_three_directed_evidence_backed_edges(self):
         self.assertEqual(len(self.cases), 6)
         self.assertEqual(
@@ -158,6 +172,18 @@ class NarrativeLineageTests(unittest.TestCase):
                 self._add_narrative(case)
             else:
                 self._add_accomplishment(case)
+        for pe_number, agency in (
+            ("0603176BR", "Defense-Wide"),
+            ("0603160BR", "Defense-Wide"),
+            ("0602182A", "Army"),
+            ("0602146A", "Army"),
+            ("0602144A", "Army"),
+            ("0605001A", "Army"),
+            ("0605002A", "Army"),
+            ("0604659N", "Navy"),
+            ("0105519N", "Navy"),
+        ):
+            self._add_program_element(pe_number, agency)
         self.session.commit()
 
         edges = detect_narrative_transfers(self.session)
@@ -195,6 +221,8 @@ class NarrativeLineageTests(unittest.TestCase):
             self.assertIn(edge.evidence_text, case["text"])
 
     def test_two_digit_fiscal_year_is_2000_based(self):
+        self._add_program_element("0605003A", "Army")
+        self._add_program_element("0605004A", "Army")
         self._add_narrative({
             "pe_number": "0605003A",
             "agency": "Army",
@@ -211,6 +239,9 @@ class NarrativeLineageTests(unittest.TestCase):
         self.assertEqual(edges[0].confidence, 0.9)
 
     def test_pe_suffix_must_use_uppercase_alphanumerics(self):
+        self._add_program_element("0605005A", "Army")
+        self._add_program_element("0605006A", "Army")
+        self._add_program_element("0605008A", "Army")
         self._add_narrative({
             "pe_number": "0605005A",
             "agency": "Army",
@@ -232,6 +263,8 @@ class NarrativeLineageTests(unittest.TestCase):
         self.assertEqual(edges, [])
 
     def test_duplicate_edge_keeps_first_source_file_and_row_id(self):
+        self._add_program_element("0605010A", "Army")
+        self._add_program_element("0605011A", "Army")
         first_sentence = "Funding was transferred to PE 0605011A in FY 2025."
         self._add_narrative({
             "pe_number": "0605010A",
@@ -262,6 +295,26 @@ class NarrativeLineageTests(unittest.TestCase):
         self.assertEqual(edges[0].evidence_source, "a_source.xml")
         self.assertEqual(edges[0].evidence_text, first_sentence)
         self.assertEqual(edges[0].first_fy_after, 2025)
+
+    def test_unknown_endpoint_is_rejected_and_counted(self):
+        self._add_program_element("0605003A", "Army")
+        self._add_narrative({
+            "pe_number": "0605003A",
+            "agency": "Army",
+            "fiscal_year": 2030,
+            "source_file": "fy27_transfer.xml",
+            "text": "Funding was transferred to PE 0605004A in FY27.",
+        })
+        self.session.commit()
+        rejections = {}
+
+        edges = detect_narrative_transfers(
+            self.session,
+            rejections=rejections,
+        )
+
+        self.assertEqual(edges, [])
+        self.assertEqual(rejections, {"unknown_successor": 1})
 
 
 if __name__ == "__main__":

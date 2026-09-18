@@ -1,7 +1,7 @@
 """Evaluate PE-lineage detectors against a bounded, hand-checked golden set.
 
-Expected on the shipped database: 433 raw edges, 432 distinct PE pairs,
-recall 10/10, precision 10/11, 421 unlabelled pairs, and 10/10 matching
+Expected on the shipped database: 405 raw edges, 404 distinct PE pairs,
+recall 10/10, precision 10/11, 393 unlabelled pairs, and 10/10 matching
 fiscal years. Precision is measured only inside the golden universe; all
 other detected pairs are reported as unlabelled rather than assumed correct.
 """
