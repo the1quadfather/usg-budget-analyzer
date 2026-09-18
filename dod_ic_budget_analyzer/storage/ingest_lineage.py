@@ -36,8 +36,16 @@ def _model(edge: LineageEdge) -> PELineage:
 
 def ingest_lineage(session: Session) -> dict[str, int]:
     """Replace rows produced by the two lineage detectors and commit them."""
-    ba_edges = detect_ba_renumbering(session)
-    narrative_edges = detect_narrative_transfers(session)
+    ba_rejections: dict[str, int] = {}
+    narrative_rejections: dict[str, int] = {}
+    ba_edges = detect_ba_renumbering(
+        session,
+        rejections=ba_rejections,
+    )
+    narrative_edges = detect_narrative_transfers(
+        session,
+        rejections=narrative_rejections,
+    )
     edges = [*ba_edges, *narrative_edges]
     hashes = {edge.content_hash for edge in edges}
     if len(hashes) != len(edges):
@@ -57,6 +65,14 @@ def ingest_lineage(session: Session) -> dict[str, int]:
         "ba_renumber": len(ba_edges),
         "narrative": len(narrative_edges),
         "total": len(edges),
+        "rejected_unknown_predecessor": (
+            ba_rejections.get("unknown_predecessor", 0)
+            + narrative_rejections.get("unknown_predecessor", 0)
+        ),
+        "rejected_unknown_successor": (
+            ba_rejections.get("unknown_successor", 0)
+            + narrative_rejections.get("unknown_successor", 0)
+        ),
     }
 
 
@@ -85,6 +101,13 @@ def main() -> None:
         f"{result['ba_renumber']:,} ba_renumber + "
         f"{result['narrative']:,} narrative = {result['total']:,}; "
         f"{after:,} after."
+    )
+    print(
+        "Rejected lineage edges: "
+        f"unknown_predecessor="
+        f"{result['rejected_unknown_predecessor']:,}; "
+        f"unknown_successor="
+        f"{result['rejected_unknown_successor']:,}."
     )
 
 

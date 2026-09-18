@@ -26,7 +26,7 @@ database. Runtime activity can add rows to a working database after it is expand
 | `pe_congressional_actions` | 26,544 | House and Senate NDAA committee-report authorization tables, FY2012–FY2027 |
 | `pe_narratives` | 18,268 | R-2 justification books in XML and PDF |
 | `pe_accomplishments` | 101,219 | R-2 accomplishment and planned-program line items |
-| `pe_lineage` | 433 | Derived from R-1 funding and R-2 narratives |
+| `pe_lineage` | 405 | Derived from R-1 funding and R-2 narratives |
 | `ai_cache` | 0 | Runtime only; reset before every archive build |
 | `ai_spend` | 0 | Runtime only; reset before every archive build |
 | `ai_user_history` | 0 | Runtime only; reset before every archive build |
@@ -284,9 +284,9 @@ Evidence-backed predecessor/successor relationships between Program Elements. Th
 derived table, not a source exhibit: `analysis/lineage.py` derives it from
 `funding_lines` and `pe_narratives`, and `storage/ingest_lineage.py` rebuilds it.
 
-`relation` contains `transferred` (431 rows) and `renumbered` (2). The analysis-layer
+`relation` contains `transferred` (403 rows) and `renumbered` (2). The analysis-layer
 `Relation` type also permits `split` and `merged`, but no current detector emits them.
-`method` contains `narrative` (431 rows) and `ba_renumber` (2).
+`method` contains `narrative` (403 rows) and `ba_renumber` (2).
 
 | Column | SQL type | Nullable | Unit or meaning |
 |---|---|:---:|---|
