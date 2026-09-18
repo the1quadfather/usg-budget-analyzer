@@ -30,6 +30,7 @@ GOOGLE_API_KEY). Everything degrades gracefully: no key / no package / API
 error -> an empty result, never an exception to the caller.
 """
 
+import hashlib
 import json
 import logging
 import os
@@ -38,7 +39,7 @@ import threading
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, List, Optional
+from typing import Any, Callable, List, Optional, Sequence, TYPE_CHECKING
 
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -49,6 +50,9 @@ from analysis.ai_budget import (
     SpendLedger,
     budget_guard,
 )
+
+if TYPE_CHECKING:
+    from analysis.narrative_qa import Passage
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +66,7 @@ _METERING_FAILED = False
 # answers from the old prompt are never served.
 PROMPT_VERSIONS = {
     "adjudicate": 1,
+    "narrative_answer": 1,
     "find_open_source_hits": 1,
     "annual_signal": 1,
 }
@@ -76,6 +81,36 @@ ADJUDICATION_SCHEMA = {
         "no_match": {"type": "BOOLEAN"},
     },
     "required": ["pe_number", "agency", "confidence", "rationale", "no_match"],
+}
+
+ANSWER_SCHEMA = {
+    "type": "OBJECT",
+    "properties": {
+        "sentences": {
+            "type": "ARRAY",
+            "items": {
+                "type": "OBJECT",
+                "properties": {
+                    "text": {"type": "STRING"},
+                    "citations": {
+                        "type": "ARRAY",
+                        "items": {
+                            "type": "OBJECT",
+                            "properties": {
+                                "passage": {"type": "INTEGER"},
+                                "quote": {"type": "STRING"},
+                            },
+                            "required": ["passage", "quote"],
+                        },
+                    },
+                },
+                "required": ["text", "citations"],
+            },
+        },
+        "refused": {"type": "BOOLEAN"},
+        "reason": {"type": "STRING"},
+    },
+    "required": ["sentences", "refused", "reason"],
 }
 
 
@@ -349,6 +384,77 @@ class GeminiEnricher:
 
         return self._governed("adjudicate", params, user_id, allow_fresh,
                               credits, call, empty=None, force=force)
+
+    def narrative_answer(
+        self,
+        question: str,
+        passages: Sequence["Passage"],
+        user_id: str = "local",
+        allow_fresh: bool = True,
+        credits: Optional[int] = None,
+        force: bool = False,
+    ) -> EnrichmentResult:
+        """Synthesize a locally retrieved answer with verified citations."""
+        from analysis.narrative_qa import (
+            index_status,
+            normalize_ws,
+            validate_answer,
+        )
+
+        normalized_question = normalize_ws(question)
+        params = {
+            "question": normalized_question,
+            "index": index_status()["corpus_hash"][:16],
+            "passages": [
+                hashlib.sha256(passage.text.encode("utf-8")).hexdigest()[:16]
+                for passage in passages
+            ],
+        }
+
+        def call():
+            from google.genai import types
+
+            listing = "\n\n".join(
+                f"[{position}] PE {passage.pe_number} [{passage.agency}] "
+                f"FY{passage.fiscal_year} {passage.source_file}:\n"
+                f"{passage.text}"
+                for position, passage in enumerate(passages, start=1)
+            )
+            prompt = (
+                "You are a US defense budget analyst. Answer the question "
+                "using only the numbered passages below. Quote supporting "
+                "passage text verbatim in every citation. Produce two to "
+                "six sentences, each with at least one citation. If the "
+                "passages do not support an answer, set refused=true and "
+                "give a reason.\n\n"
+                f"Question: {normalized_question}\n\n"
+                f"Passages:\n{listing}"
+            )
+            resp = self.client.models.generate_content(
+                model=self.model,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    response_mime_type="application/json",
+                    response_schema=ANSWER_SCHEMA,
+                    temperature=0.0,
+                ),
+            )
+            payload = validate_answer(
+                json.loads(resp.text),
+                passages,
+            ).to_dict()
+            return payload, _usage(resp)
+
+        return self._governed(
+            "narrative_answer",
+            params,
+            user_id,
+            allow_fresh,
+            credits,
+            call,
+            empty=None,
+            force=force,
+        )
 
     # ── Open-source mention search ────────────────────────────────────────────
 

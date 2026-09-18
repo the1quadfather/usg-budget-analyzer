@@ -2,16 +2,21 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 import re
+from typing import TYPE_CHECKING
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 import config
 from storage.db import PENarrative
+
+if TYPE_CHECKING:
+    from analysis.oss_enricher import EnrichmentResult
 
 
 MODEL_NAME = "multi-qa-MiniLM-L6-cos-v1"
@@ -31,6 +36,149 @@ class Passage:
     source_file: str
     text: str
     score: float
+
+
+@dataclass(frozen=True)
+class Citation:
+    pe_number: str
+    agency: str
+    fiscal_year: int
+    source_file: str
+    quote: str
+
+
+@dataclass(frozen=True)
+class CitedAnswer:
+    sentences: tuple[tuple[str, tuple[Citation, ...]], ...]
+    refused: bool
+    reason: str | None
+
+    def to_dict(self) -> dict:
+        return {
+            "sentences": [
+                {
+                    "text": text,
+                    "citations": [
+                        {
+                            "pe_number": citation.pe_number,
+                            "agency": citation.agency,
+                            "fiscal_year": citation.fiscal_year,
+                            "source_file": citation.source_file,
+                            "quote": citation.quote,
+                        }
+                        for citation in citations
+                    ],
+                }
+                for text, citations in self.sentences
+            ],
+            "refused": self.refused,
+            "reason": self.reason,
+        }
+
+    @classmethod
+    def from_dict(cls, payload: dict) -> "CitedAnswer":
+        return cls(
+            sentences=tuple(
+                (
+                    sentence["text"],
+                    tuple(
+                        Citation(**citation)
+                        for citation in sentence["citations"]
+                    ),
+                )
+                for sentence in payload["sentences"]
+            ),
+            refused=payload["refused"],
+            reason=payload.get("reason"),
+        )
+
+
+def normalize_ws(text: str) -> str:
+    """Collapse whitespace runs to one space and remove edge whitespace."""
+    return " ".join(text.split())
+
+
+def validate_answer(
+    raw: dict,
+    passages: Sequence[Passage],
+) -> CitedAnswer:
+    """Resolve and enforce passage citations in a model-produced answer."""
+    if raw.get("refused"):
+        return CitedAnswer(
+            (),
+            True,
+            raw.get("reason") or "model_refused",
+        )
+
+    raw_sentences = raw.get("sentences") or []
+    if not raw_sentences:
+        return CitedAnswer((), True, "empty")
+
+    sentences = []
+    for sentence in raw_sentences:
+        citations = []
+        for raw_citation in sentence.get("citations", []):
+            position = raw_citation.get("passage")
+            quote = raw_citation.get("quote")
+            if type(position) is not int or not isinstance(quote, str):
+                continue
+            if position < 1 or position > len(passages):
+                continue
+            normalized_quote = normalize_ws(quote)
+            passage = passages[position - 1]
+            if len(normalized_quote) < 20:
+                continue
+            if normalized_quote not in normalize_ws(passage.text):
+                continue
+            citations.append(Citation(
+                pe_number=passage.pe_number,
+                agency=passage.agency,
+                fiscal_year=passage.fiscal_year,
+                source_file=passage.source_file,
+                quote=normalized_quote,
+            ))
+        if not citations:
+            return CitedAnswer((), True, "uncited")
+        sentences.append((sentence["text"], tuple(citations)))
+
+    return CitedAnswer(tuple(sentences), False, None)
+
+
+def answer(
+    question: str,
+    passages: Sequence[Passage],
+    *,
+    user_id: str,
+    allow_fresh: bool,
+    credits: int | None = None,
+    force: bool = False,
+    enricher=None,
+) -> EnrichmentResult:
+    """Answer from retrieved passages through the governed AI path."""
+    from analysis import oss_enricher
+
+    if not question.strip() or not passages:
+        return oss_enricher.EnrichmentResult(
+            payload=None,
+            blocked=True,
+            message="Nothing to answer from.",
+        )
+    if enricher is None:
+        if not oss_enricher.available():
+            return oss_enricher.EnrichmentResult(
+                payload=None,
+                blocked=True,
+                message=oss_enricher.status()[1],
+            )
+        enricher = oss_enricher.GeminiEnricher()
+    return enricher.narrative_answer(
+        question,
+        passages,
+        user_id=user_id,
+        allow_fresh=allow_fresh,
+        credits=credits,
+        force=force,
+    )
 
 
 def chunk_text(text: str, limit: int = 1500) -> list[str]:

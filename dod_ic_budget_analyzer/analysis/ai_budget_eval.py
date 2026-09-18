@@ -16,6 +16,7 @@ Usage:
     python analysis/ai_budget_eval.py
 """
 
+import json
 import logging
 import sys
 import tempfile
@@ -320,6 +321,136 @@ def run() -> int:
     r4 = enricher.adjudicate("hypersonics", cands, user_id="dave", credits=99)
     check("enricher: non-grounded result IS shared across users",
           (calls["n"] - before, r4.cached), (1, True))
+
+    # Narrative synthesis is non-grounded, shared across users, citation-
+    # validated before caching, and metered like every other governed task.
+    from analysis.narrative_qa import Passage
+
+    narrative_passages = [
+        Passage(
+            pe_number="0603032F",
+            agency="Air Force",
+            fiscal_year=2027,
+            project_number=None,
+            source_file="skyborg.xml",
+            text=(
+                "The program develops autonomous aircraft for contested "
+                "missions and collaborative operations."
+            ),
+            score=0.9,
+        ),
+        Passage(
+            pe_number="0605042A",
+            agency="Army",
+            fiscal_year=2026,
+            project_number="JTRS",
+            source_file="jtrs.xml",
+            text=(
+                "Software-defined radios provide secure communications "
+                "for tactical formations."
+            ),
+            score=0.8,
+        ),
+    ]
+
+    class _FakeNarrativeResp:
+        candidates = [_FakeAdjCandidate()]
+        usage_metadata = _FakeUsage()
+
+        def __init__(self, payload):
+            self.text = json.dumps(payload)
+
+    check("enricher: narrative task is not grounded",
+          "narrative_answer" not in config.GROUNDED_TASKS, True)
+
+    valid_payload = {
+        "sentences": [{
+            "text": "Skyborg develops autonomous aircraft.",
+            "citations": [{
+                "passage": 1,
+                "quote": "develops autonomous aircraft for contested missions",
+            }],
+        }],
+        "refused": False,
+        "reason": "",
+    }
+    valid_response = _FakeNarrativeResp(valid_payload)
+    _FakeModels.generate_content = lambda self, **kw: (
+        calls.__setitem__("n", calls["n"] + 1) or valid_response)
+    before = calls["n"]
+    cited = enricher.narrative_answer(
+        "What is Skyborg developing?",
+        narrative_passages,
+        user_id="frank",
+        credits=99,
+    )
+    check(
+        "enricher: narrative answer calls once and validates its citation",
+        (
+            calls["n"] - before,
+            cited.payload["refused"],
+            len(cited.payload["sentences"]),
+            len(cited.payload["sentences"][0]["citations"]),
+            cited.payload["sentences"][0]["citations"][0]["pe_number"],
+        ),
+        (1, False, 1, 1, "0603032F"),
+    )
+
+    before = calls["n"]
+    cited_shared = enricher.narrative_answer(
+        "What is Skyborg developing?",
+        narrative_passages,
+        user_id="grace",
+        credits=99,
+    )
+    check("enricher: narrative cache is shared across users",
+          (calls["n"] - before, cited_shared.cached), (0, True))
+
+    invalid_payload = {
+        "sentences": [{
+            "text": "The passages support an unrelated claim.",
+            "citations": [{
+                "passage": 1,
+                "quote": "This quote does not occur in either passage.",
+            }],
+        }],
+        "refused": False,
+        "reason": "",
+    }
+    invalid_response = _FakeNarrativeResp(invalid_payload)
+    _FakeModels.generate_content = lambda self, **kw: (
+        calls.__setitem__("n", calls["n"] + 1) or invalid_response)
+    uncited = enricher.narrative_answer(
+        "What do the passages say about propulsion?",
+        narrative_passages,
+        user_id="heidi",
+        credits=99,
+    )
+    check("enricher: unsupported narrative quote refuses the whole answer",
+          (uncited.payload["refused"], uncited.payload["reason"]),
+          (True, "uncited"))
+
+    with ab.session_factory()() as s:
+        narrative_tasks = set(s.execute(
+            select(AICacheRow.task).where(
+                AICacheRow.task == "narrative_answer"
+            )
+        ).scalars().all())
+    check("enricher: narrative answers land in the shared cache",
+          narrative_tasks, {"narrative_answer"})
+
+    from storage.db import AISpend as AISpendRow
+    with ab.session_factory()() as s:
+        narrative_spend = list(s.execute(
+            select(AISpendRow).where(
+                AISpendRow.task == "narrative_answer"
+            )
+        ).scalars())
+    narrative_fresh = [row for row in narrative_spend if not row.cache_hit]
+    check("enricher: narrative calls are metered under one cent",
+          (len(narrative_fresh),
+           sum(row.est_cost_usd for row in narrative_fresh) < 0.01),
+          (2, True))
 
     # Ledger reflects the grounded queries so grounding cost is visible - and
     # ONLY the grounded ones: three grounded research calls (carol, dave, and

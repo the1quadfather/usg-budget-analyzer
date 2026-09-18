@@ -10,7 +10,16 @@ from sqlalchemy.orm import Session
 APP_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(APP_DIR))
 
-from analysis.narrative_qa import INDEX_PATH, chunk_text, index_rows, retrieve
+from analysis.narrative_qa import (
+    Citation,
+    CitedAnswer,
+    INDEX_PATH,
+    Passage,
+    chunk_text,
+    index_rows,
+    retrieve,
+    validate_answer,
+)
 from storage.db import Base, PENarrative
 
 
@@ -72,6 +81,118 @@ class IndexRowsTests(unittest.TestCase):
         self.session.commit()
 
         self.assertEqual(len(index_rows(self.session)), 2)
+
+
+class ValidateAnswerTests(unittest.TestCase):
+    def setUp(self):
+        self.passages = [
+            Passage(
+                pe_number="0603032F",
+                agency="Air Force",
+                fiscal_year=2027,
+                project_number=None,
+                source_file="skyborg.xml",
+                text=(
+                    "The Skyborg program develops autonomous aircraft "
+                    "capabilities for contested environments."
+                ),
+                score=0.9,
+            ),
+            Passage(
+                pe_number="0605042A",
+                agency="Army",
+                fiscal_year=2026,
+                project_number="JTRS",
+                source_file="jtrs.xml",
+                text=(
+                    "Joint   radio software enables\nsecure communications "
+                    "across Army tactical networks."
+                ),
+                score=0.8,
+            ),
+        ]
+
+    def _raw(self, passage: int, quote: str) -> dict:
+        return {
+            "sentences": [{
+                "text": "The retrieved passage supports this answer.",
+                "citations": [{"passage": passage, "quote": quote}],
+            }],
+            "refused": False,
+            "reason": "",
+        }
+
+    def test_exact_quote_resolves_to_right_citation(self):
+        quote = "develops autonomous aircraft capabilities"
+
+        answer = validate_answer(self._raw(1, quote), self.passages)
+
+        self.assertEqual(answer.sentences[0][1], (Citation(
+            pe_number="0603032F",
+            agency="Air Force",
+            fiscal_year=2027,
+            source_file="skyborg.xml",
+            quote=quote,
+        ),))
+        self.assertFalse(answer.refused)
+
+    def test_internal_whitespace_is_normalized(self):
+        quote = "Joint radio software enables secure communications"
+
+        answer = validate_answer(self._raw(2, quote), self.passages)
+
+        self.assertFalse(answer.refused)
+        self.assertEqual(answer.sentences[0][1][0].pe_number, "0605042A")
+
+    def test_short_quote_yields_uncited_refusal(self):
+        answer = validate_answer(
+            self._raw(1, "autonomous aircraft"),
+            self.passages,
+        )
+
+        self.assertEqual(answer, CitedAnswer((), True, "uncited"))
+
+    def test_out_of_range_passage_yields_uncited_refusal(self):
+        for passage in (0, 3):
+            with self.subTest(passage=passage):
+                answer = validate_answer(
+                    self._raw(
+                        passage,
+                        "develops autonomous aircraft capabilities",
+                    ),
+                    self.passages,
+                )
+                self.assertEqual(answer, CitedAnswer((), True, "uncited"))
+
+    def test_model_refusal_preserves_reason(self):
+        answer = validate_answer({
+            "sentences": [],
+            "refused": True,
+            "reason": "Passages do not answer the question.",
+        }, self.passages)
+
+        self.assertEqual(answer, CitedAnswer(
+            (),
+            True,
+            "Passages do not answer the question.",
+        ))
+
+    def test_empty_sentences_yield_empty_refusal(self):
+        answer = validate_answer({
+            "sentences": [],
+            "refused": False,
+            "reason": "",
+        }, self.passages)
+
+        self.assertEqual(answer, CitedAnswer((), True, "empty"))
+
+    def test_to_dict_from_dict_round_trip(self):
+        answer = validate_answer(
+            self._raw(1, "develops autonomous aircraft capabilities"),
+            self.passages,
+        )
+
+        self.assertEqual(CitedAnswer.from_dict(answer.to_dict()), answer)
 
 
 class RetrieveTests(unittest.TestCase):
