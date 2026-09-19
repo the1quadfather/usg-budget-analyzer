@@ -717,14 +717,18 @@ program's funding sources plus the P-1 source documents (`document_type == "P1"`
 **Test:** `test_transition_panel_renders_inference_label(monkeypatch)`: `HF_HUB_OFFLINE=1`,
 `default_timeout=120`, query params `tab=finder`, `pe=0207146F`, `agency=Air Force`; run;
 assert an expander label contains "inference"; assert "F015EX" appears in a dataframe
-within the Funding sub-tab; then the same for `pe=0601102A`, `agency=Army` asserting the
-"No procurement line" caption; main tab labels unchanged.
+within the Funding sub-tab; then `pe=0601102A`, `agency=Army` asserting the research
+caption ("Basic and applied research"); then `pe=0605018F`, `agency=Air Force` (Air Force
+Integrated Military Human Resources, a BA 6 PE verified on 2026-09-19 to return no
+candidates) asserting the "No procurement line" caption; main tab labels unchanged.
+**Corrected 2026-09-19** after Codex correctly stopped: the earlier text asked the
+research PE to show the empty-result caption, which Rule 0 makes unreachable for it.
 
 **Definition of done:** every candidate shows confidence, strategy, and (for NARRATIVE)
 its evidence sentence; the expander title contains "inference"; ambiguous candidates show
 the word "ambiguous"; no candidate renders without a strategy and a score; the smoke
-test passes; clicked through in a real browser on PE 0207146F and PE 0601102A, and the
-Program Finder tab stays selected.
+test passes; clicked through in a real browser on PE 0207146F, PE 0601102A, and PE 0605018F, and
+the Program Finder tab stays selected.
 
 ---
 
