@@ -375,14 +375,21 @@ def run() -> int:
         "reason": "",
     }
     valid_response = _FakeNarrativeResp(valid_payload)
-    _FakeModels.generate_content = lambda self, **kw: (
-        calls.__setitem__("n", calls["n"] + 1) or valid_response)
+    narrative_configs = []
+
+    def capture_narrative_config(self, **kw):
+        calls["n"] += 1
+        narrative_configs.append(kw["config"])
+        return valid_response
+
+    _FakeModels.generate_content = capture_narrative_config
     before = calls["n"]
     cited = enricher.narrative_answer(
         "What is Skyborg developing?",
         narrative_passages,
         user_id="frank",
         credits=99,
+        force=True,
     )
     check(
         "enricher: narrative answer calls once and validates its citation",
@@ -394,6 +401,14 @@ def run() -> int:
             cited.payload["sentences"][0]["citations"][0]["pe_number"],
         ),
         (1, False, 1, 1, "0603032F"),
+    )
+    check(
+        "enricher: narrative answer caps thinking and output tokens",
+        (
+            narrative_configs[0].thinking_config.thinking_budget,
+            narrative_configs[0].max_output_tokens,
+        ),
+        (1024, 2048),
     )
 
     before = calls["n"]
@@ -500,8 +515,14 @@ def run() -> int:
         ]})
 
     extraction_response = _FakeExtractionResp()
-    _FakeModels.generate_content = lambda self, **kw: (
-        calls.__setitem__("n", calls["n"] + 1) or extraction_response)
+    extraction_configs = []
+
+    def capture_extraction_config(self, **kw):
+        calls["n"] += 1
+        extraction_configs.append(kw["config"])
+        return extraction_response
+
+    _FakeModels.generate_content = capture_extraction_config
     before = calls["n"]
     extraction_result = enricher.extract_facts(
         extraction_work[0]["narrative_table"],
@@ -538,6 +559,11 @@ def run() -> int:
         remaining = build_worklist(s, limit=1)
     check("enricher: extract_facts fake client is called once",
           calls["n"] - before, 1)
+    check(
+        "enricher: extract_facts keeps its thinking budget",
+        extraction_configs[0].thinking_config.thinking_budget,
+        512,
+    )
     check("enricher: extraction keeps one fact and drops one",
           (inserted, len(fact_rows), len(extraction_rows),
            extraction_rows[0].fact_count,

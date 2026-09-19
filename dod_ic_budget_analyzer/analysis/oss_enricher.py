@@ -405,6 +405,39 @@ class GeminiEnricher:
         return self._governed("adjudicate", params, user_id, allow_fresh,
                               credits, call, empty=None, force=force)
 
+    def _generate_with_thinking(
+        self,
+        *,
+        contents,
+        base_config: dict,
+        thinking_budget: int,
+    ):
+        from google.genai import errors, types
+
+        def generate(thinking_config):
+            return self.client.models.generate_content(
+                model=self.model,
+                contents=contents,
+                config=types.GenerateContentConfig(
+                    **base_config,
+                    thinking_config=thinking_config,
+                ),
+            )
+
+        try:
+            return generate(types.ThinkingConfig(
+                thinking_budget=thinking_budget
+            ))
+        except errors.ClientError as exc:
+            if getattr(exc, "code", None) != 400:
+                raise
+            logger.warning(
+                "Gemini rejected thinking_budget=%s; retrying with "
+                "thinking_level='low'.",
+                thinking_budget,
+            )
+            return generate(types.ThinkingConfig(thinking_level="low"))
+
     def extract_facts(
         self,
         narrative_table: str,
@@ -425,8 +458,6 @@ class GeminiEnricher:
         }
 
         def call():
-            from google.genai import errors, types
-
             prompt = (
                 "You are extracting structured facts from one US defense "
                 "budget narrative. Return only facts supported by the "
@@ -439,30 +470,16 @@ class GeminiEnricher:
                 "Return an empty facts list when none are present.\n\n"
                 f"Narrative:\n{text}"
             )
-
-            def generate(thinking_config):
-                return self.client.models.generate_content(
-                    model=self.model,
-                    contents=prompt,
-                    config=types.GenerateContentConfig(
-                        response_mime_type="application/json",
-                        response_schema=EXTRACTION_SCHEMA,
-                        temperature=0.0,
-                        max_output_tokens=1024,
-                        thinking_config=thinking_config,
-                    ),
-                )
-
-            try:
-                resp = generate(types.ThinkingConfig(thinking_budget=512))
-            except errors.ClientError as exc:
-                if getattr(exc, "code", None) != 400:
-                    raise
-                logger.warning(
-                    "Gemini rejected thinking_budget=512; retrying "
-                    "extract_facts with thinking_level='low'."
-                )
-                resp = generate(types.ThinkingConfig(thinking_level="low"))
+            resp = self._generate_with_thinking(
+                contents=prompt,
+                base_config={
+                    "response_mime_type": "application/json",
+                    "response_schema": EXTRACTION_SCHEMA,
+                    "temperature": 0.0,
+                    "max_output_tokens": 1024,
+                },
+                thinking_budget=512,
+            )
             parsed = json.loads(resp.text)
             return {"facts": parsed["facts"]}, _usage(resp)
 
@@ -503,8 +520,6 @@ class GeminiEnricher:
         }
 
         def call():
-            from google.genai import types
-
             listing = "\n\n".join(
                 f"[{position}] PE {passage.pe_number} [{passage.agency}] "
                 f"FY{passage.fiscal_year} {passage.source_file}:\n"
@@ -521,14 +536,18 @@ class GeminiEnricher:
                 f"Question: {normalized_question}\n\n"
                 f"Passages:\n{listing}"
             )
-            resp = self.client.models.generate_content(
-                model=self.model,
+            # Verbatim-quote synthesis needs some reasoning, so use twice the
+            # extraction budget; 2,048 output tokens comfortably hold six
+            # cited sentences.
+            resp = self._generate_with_thinking(
                 contents=prompt,
-                config=types.GenerateContentConfig(
-                    response_mime_type="application/json",
-                    response_schema=ANSWER_SCHEMA,
-                    temperature=0.0,
-                ),
+                base_config={
+                    "response_mime_type": "application/json",
+                    "response_schema": ANSWER_SCHEMA,
+                    "temperature": 0.0,
+                    "max_output_tokens": 2048,
+                },
+                thinking_budget=1024,
             )
             payload = validate_answer(
                 json.loads(resp.text),
