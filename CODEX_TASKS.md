@@ -74,7 +74,7 @@ tab-reordering bug reached `main` — it passed the smoke test and nobody clicke
 | T15b Batch extraction job | shipped | `analysis/narrative_extract.py` + `narrative_extractions` ledger; 50 narratives -> 25 verbatim-verified facts for $0.0396 (thinking capped); archive 15 tables; commits `f23ad7f` + `5f32ac6`, merged as a merge commit after a failed fast-forward |
 | T10b Transition candidates + golden set + eval | shipped | `analysis/transition.py` (NARRATIVE/FUZZY/SEMANTIC + research rule), 20-case golden set, recall@3 16/16, negatives 4/4, 55 ms/query; commit `38ae87a` |
 | T10c Transition panel | shipped | "Did it transition to procurement? (inference)" on Program Finder → Funding, `procurement_sources()` provenance; AppTest covers F-15EX, a research PE, and an empty case; browser-verified; commit `b3d69ba` |
-| (none) | — | **Every roadmap task T8–T15 is shipped as of 2026-09-19.** Follow-ups recorded in the specs: accomplishments corpus for T15b, T11b false-positive detector fix, thinking budget for `narrative_answer`. |
+| T14d | **open** | Thinking budget for `narrative_answer` (spec written 2026-09-19). Roadmap T8–T15 otherwise complete; other follow-ups listed in the T15b, T11c, and T14c specs. |
 
 Database ground truth, queried 2026-09-09:
 
@@ -1866,6 +1866,83 @@ tab stays selected across the rerun.
 python -m pytest -q
 python analysis/ai_budget_eval.py
 python -m streamlit run app.py --server.port 8501     # then click through as described above and describe what you saw
+```
+
+### T14d — Thinking budget for cited answers
+
+**Files:** `analysis/oss_enricher.py` (a private helper shared by `extract_facts` and
+`narrative_answer`, and the `narrative_answer` request config), `analysis/ai_budget_eval.py`
+(two checks). Nothing else: no change to `PROMPT_VERSIONS` (the prompt and output shape
+are unchanged, so cached v1 answers stay valid), no change to `app.py`, `config.py`, or
+`analysis/narrative_qa.py`.
+**Depends on:** T14c and T15b merged (they are).
+**Written 2026-09-19.**
+
+**Verified facts:**
+
+- The only live `narrative_answer` call so far (T14c browser check, 2026-09-19,
+  gemini-3.6-flash, 8 passages) billed 2,828 input, 555 output, and **2,491 thinking
+  tokens** for $0.0135. Thinking is billed at the output rate, so it was about 70% of
+  the cost. The request config sets `response_mime_type`, `response_schema`, and
+  `temperature=0.0` only; no `thinking_config`, no `max_output_tokens`.
+- `extract_facts` (T15b) already caps thinking with
+  `types.ThinkingConfig(thinking_budget=512)` and, on a `google.genai.errors.ClientError`
+  with `code == 400`, retries once with `types.ThinkingConfig(thinking_level="low")`.
+  Over 50 live calls the largest observed thinking count was 571 (the budget is
+  approximate, not a hard ceiling), and no fallback fired.
+- `google-genai` 2.19.0: `types.ThinkingConfig` has `include_thoughts`,
+  `thinking_budget`, `thinking_level`; `types.GenerateContentConfig` accepts
+  `thinking_config` and `max_output_tokens`.
+- `analysis/ai_budget_eval.py` drives the enricher with a fake client whose
+  `generate_content(self, **kw)` receives the `config` object; a check can capture
+  `kw["config"]` and inspect `.thinking_config.thinking_budget`.
+
+**Do:**
+
+1. Extract the try/except-400 fallback in `extract_facts` into a private method
+   `_generate_with_thinking(self, *, contents, base_config: dict, thinking_budget: int)`
+   that builds `types.GenerateContentConfig(**base_config,
+   thinking_config=types.ThinkingConfig(thinking_budget=thinking_budget))`, calls
+   `self.client.models.generate_content(model=self.model, contents=contents, config=…)`,
+   and on `errors.ClientError` with `code == 400` logs a warning and retries once with
+   `thinking_level="low"`. `extract_facts` calls it with `thinking_budget=512` and its
+   existing base config (behaviour unchanged).
+2. `narrative_answer` calls it with `thinking_budget=1024` and base config
+   `{"response_mime_type": "application/json", "response_schema": ANSWER_SCHEMA,
+   "temperature": 0.0, "max_output_tokens": 2048}`. Rationale in a comment: synthesis
+   with verbatim quotes needs some reasoning, so twice the extraction budget; 2,048 output
+   tokens comfortably holds six sentences with quotes.
+3. Eval checks: install a capturing fake `generate_content` for one `narrative_answer`
+   call with `force=True` and assert the captured config has
+   `thinking_config.thinking_budget == 1024` and `max_output_tokens == 2048`; do the same
+   for one `extract_facts` call asserting `thinking_budget == 512`. Keep every existing
+   check passing (the capturing fake must still return the same fake response objects).
+
+**Definition of done:** both methods go through the shared helper; the two eval checks
+pass and the eval stays at 100%; `python -m pytest -q` passes; one live `narrative_answer`
+call made with `force=True` on the Skyborg golden question (this machine has a key)
+returns a non-refused answer with at least two cited sentences, and its `ai_spend` row
+shows `thought_tokens <= 1200` and `est_cost_usd < 0.01`. Paste that row. Expected: about
+$0.008 against the $0.0135 baseline. If the live answer comes back refused or uncited,
+report it and stop; do not raise the budget to make it pass.
+
+**Verify:**
+```bash
+python -m pytest -q
+python analysis/ai_budget_eval.py
+python - <<'PY'
+import sys; sys.path.insert(0, '.')
+from analysis.narrative_qa import retrieve, answer, CitedAnswer
+from analysis.ai_budget import session_factory, AISpend
+from sqlalchemy import select
+q = "Skyborg autonomous aircraft vanguard program"
+res = answer(q, retrieve(q, k=8), user_id="t14d-check", allow_fresh=True, force=True)
+a = CitedAnswer.from_dict(res.payload) if res.payload else None
+print("blocked", res.blocked, "| refused", a.refused if a else None, "| sentences", len(a.sentences) if a else 0)
+with session_factory()() as s:
+    row = s.execute(select(AISpend).where(AISpend.task == "narrative_answer").order_by(AISpend.id.desc())).scalars().first()
+    print("input", row.input_tokens, "output", row.output_tokens, "thought", row.thought_tokens, "usd", round(row.est_cost_usd, 4))
+PY
 ```
 
 ### T15a — Structured-fact schema
