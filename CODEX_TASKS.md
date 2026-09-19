@@ -72,7 +72,7 @@ tab-reordering bug reached `main` — it passed the smoke test and nobody clicke
 | T14c Ask-the-corpus UI | shipped | "Ask the justification books" expander on Program Finder; key-less path verified by AppTest and browser; cold/warm AI paths verified live (one call, $0.0135, 2,491 thinking tokens); commit `f1088cb` |
 | T15a Structured-fact schema | shipped | `NarrativeFact` + `narrative_fact_hash()` in `storage/db.py`, compatibility test proves `create_all` adds the table to an existing DB; docs updated; commit `d15874f` |
 | T15b Batch extraction job | shipped | `analysis/narrative_extract.py` + `narrative_extractions` ledger; 50 narratives -> 25 verbatim-verified facts for $0.0396 (thinking capped); archive 15 tables; commits `f23ad7f` + `5f32ac6`, merged as a merge commit after a failed fast-forward |
-| T10 | **open** | T10a is research, not a Codex task. Roadmap tasks T8–T15 are complete. |
+| T10b–T10c | **open** | this document. Next: T10b (T10a's golden set folded into it; spec re-verified 2026-09-19), then T10c. Roadmap T8–T15 complete. |
 
 Database ground truth, queried 2026-09-09:
 
@@ -501,70 +501,194 @@ a constant; smoke test still passes.
 
 ### T10a — Transition golden set
 
-**Files:** new `analysis/transition_golden.json`, new `analysis/transition_eval.py`.
-**Depends on:** T9c merged.
+**Status: done by Claude on 2026-09-19; no Codex task.** The original plan was twenty
+hand-researched transitions with web URLs. The corpus turned out to contain its own
+evidence, verified by query against the shipped database, so the golden set is specified
+in full under T10b and Codex commits it verbatim. Two evidence classes:
 
-**Do:** hand-check twenty RDT&E-to-procurement transitions from public sources and record
-them:
+- **Explicit BLI citations.** R-2 accomplishment text sometimes names the procurement line
+  by code ("reprogrammed to the Weapons Procurement, Navy (WPN) appropriation (BLI
+  2280)"). Regex `\bBLI\s*#?\s*:?\s*([A-Z0-9]{2,12})\b` over `pe_accomplishments.text`
+  finds 9 mentions; 8 resolve to a code present in `procurement_lines.bli`; 6 distinct
+  `(pe_number, bli)` pairs across 5 Navy PEs. (SQLite `LIKE '%BLI%'` matches 5,142 rows
+  only because LIKE is case-insensitive and matches "public"; do not use it.)
+- **Identical titles.** 54 RDT&E program names normalise (`matching.normalizer.
+  normalize_program_name`) to exactly one P-1 `line_item_title` in the same agency, after
+  excluding the "Classified Programs" rows. These are the same programme by name: F-15EX,
+  Collaborative Combat Aircraft, Compass Call, DDG-1000, Paladin PIM, PrSM, AMPV, GBSD,
+  GPS III, JDAM, Next Generation Jammer, and so on.
 
-```json
-[{"pe_number": "0604...", "agency": "Army", "bli": "...", "appropriation": "...",
-  "first_procurement_fy": 2024, "evidence_url": "https://...", "note": "..."}]
-```
+Negatives are basic-research PEs (`0601…`) that never buy hardware.
 
-`transition_eval.py` mirrors `analysis/linker_eval.py`: loads the golden set, runs
-whatever `analysis/transition.py` exposes (T10b), prints precision/recall at the top-3.
-Until T10b exists it exits with a clear message.
+### T10b — Transition candidate generator, golden set, and eval
 
-**Definition of done:** twenty entries, each with an official or reputable URL; the file
-loads; the eval script runs and reports "no transition module yet".
+**Files:** new `analysis/transition.py`, new `analysis/transition_golden.json`, new
+`analysis/transition_eval.py`, new `tests/test_transition.py`. Do not touch
+`matching/`, `app.py`, or the archive.
+**Depends on:** T9c (P-1 ingest) and T14a (the shared embedding model loader) merged;
+both are.
+**Rewritten 2026-09-19** against the repo: the original spec assumed the program matchers
+could be pointed at P-1 titles (they cannot; both are bound to `program_elements` in
+their constructors) and had no golden set to evaluate against.
 
-### T10b — Transition candidate generator
+**Verified facts (shipped database, 2026-09-19):**
 
-**Files:** new `analysis/transition.py`, new `tests/test_transition.py`.
-**Depends on:** T10a merged.
+- `procurement_lines`: 5,253 rows, 933 distinct `bli`, 918 distinct `line_item_title`,
+  agencies `Air Force`, `Army`, `Defense-Wide`, `Marine Corps`, `Navy`, `Space Force`;
+  24 appropriations. **BLI codes are not unique across appropriations**: 15 of 933 codes
+  appear under more than one (Navy 4-digit codes especially). A candidate's identity is
+  `(bli, appropriation)`, never `bli` alone.
+- Code shapes vary by service: 4-digit Navy (`2280`), 6-character Air Force (`F015EX`,
+  `CCA000`), 10-character Army (`2073GZ0410`), 2-digit Defense-Wide (`09`, `14`). The
+  regex above covers all of them; validate a captured code by membership, not shape.
+- Cross-service procurement: Navy RDT&E can buy under Marine Corps procurement, Air Force
+  under Space Force and back. Allowed P-1 agencies per RDT&E agency:
+  `{"Navy": ("Navy", "Marine Corps"), "Air Force": ("Air Force", "Space Force"),
+  "Space Force": ("Space Force", "Air Force"), "Army": ("Army",), "Defense-Wide":
+  ("Defense-Wide",)}`.
+- `matching.fuzzy_matcher.ProgramMatcher` and `matching.semantic_matcher.SemanticMatcher`
+  take a session and index `program_elements`; they are not reusable for P-1 titles.
+  Reuse their ingredients instead: `rapidfuzz.process.extract` with `fuzz.WRatio` plus a
+  `fuzz.token_set_ratio` sanity floor (the program matcher uses 60), and the sentence
+  transformer from `analysis.narrative_qa._load_model()` (already cached per process,
+  `local_files_only`). Encoding 918 short titles takes about 3 s on CPU; cache the
+  matrix in-process with `functools.lru_cache` keyed on nothing (the P-1 table changes
+  only at ingest), never on disk.
+- Evidence sentences: split text on `(?<=[.!?])\s+` (the T14a rule) and cite the sentence
+  containing the match, with the row's `source_file`.
 
-**Do:** propose procurement BLIs for a PE using the existing fuzzy and semantic matchers
-over titles, then corroborate with narrative text.
+**API (`analysis/transition.py`):**
 
 ```python
 @dataclass(frozen=True)
 class TransitionCandidate:
-    pe_number: str
-    agency: str
-    bli: str
-    appropriation: str
-    line_item_title: str
-    confidence: float           # 0–1; combine title similarity and narrative evidence
-    strategy: str               # "FUZZY" | "SEMANTIC" | "NARRATIVE"
-    evidence_text: str | None   # verbatim sentence from pe_narratives / pe_accomplishments
-    evidence_source: str | None # source_file of that sentence
-    ambiguous: bool             # True when the runner-up is within 0.1 confidence
+    pe_number: str; agency: str
+    bli: str; appropriation: str; line_item_title: str; p1_agency: str
+    confidence: float           # 0-1
+    strategy: str               # "NARRATIVE" | "FUZZY" | "SEMANTIC"
+    evidence_text: str | None   # verbatim sentence for NARRATIVE; None otherwise
+    evidence_source: str | None # source_file for NARRATIVE; None otherwise
+    ambiguous: bool             # runner-up within 0.1 of this candidate
 
+CONFIDENCE_FLOOR = 0.6
+def bli_mentions(session, pe_number, agency) -> list[tuple[str, str, str]]: ...   # (code, sentence, source_file) from pe_narratives + pe_accomplishments for that PE, any FY
 def propose_transitions(session, pe_number: str, agency: str, *, limit: int = 5) -> list[TransitionCandidate]: ...
 ```
 
-**Definition of done:** eval script reports recall@3 ≥ 0.6 on the golden set, printed
-honestly whatever the number is; ambiguous cases carry `ambiguous=True`; a unit test
-covers one exact-title match and one no-match. No UI.
+Strategies, each producing candidates keyed by `(bli, appropriation)`:
+
+1. **NARRATIVE** (0.95): each `bli_mentions` code that exists in `procurement_lines` for an
+   allowed agency. One candidate per matching `(bli, appropriation)`; the evidence is the
+   citing sentence and its `source_file`.
+2. **FUZZY**: `process.extract(normalize_program_name(program_name), choices=<normalised
+   distinct titles for allowed agencies>, scorer=fuzz.WRatio, score_cutoff=85, limit=10)`,
+   dropping hits with `fuzz.token_set_ratio < 60`; confidence `min(score / 100, 0.99)`.
+3. **SEMANTIC**: cosine between the program name and each title's embedding
+   (`normalize_embeddings=True`); keep cosine ≥ 0.6 as confidence.
+
+Merge by key taking the highest confidence and its strategy; drop anything under
+`CONFIDENCE_FLOOR`; sort by confidence descending then `bli`; mark `ambiguous=True` on
+the top candidate when the second is within 0.1, and on any adjacent pair within 0.1;
+return `limit`. A PE whose `program_name` starts with "Classified" returns `[]`. Query
+time after model load must be under 1 s (918 titles).
+
+**Golden set (`analysis/transition_golden.json`)**, a list of
+`{"pe_number", "agency", "program_name", "label": "transition" | "no_transition",
+"acceptable": [{"bli", "appropriation"}], "evidence_class": "bli_citation" |
+"same_title" | "basic_research", "evidence_quote", "evidence_source", "note"}`.
+For `bli_citation` cases copy `evidence_quote` verbatim from the `pe_accomplishments`
+row that contains `BLI <code>` (query it; do not retype) and `evidence_source` from that
+row; for the others `evidence_quote` and `evidence_source` are `null`. Exactly these
+twenty cases:
+
+| # | PE | Agency | Program | Acceptable (bli @ appropriation) | Class |
+|---|---|---|---|---|---|
+| 1 | 0604366N | Navy | Standard Missile Improvements | 2356 @ Weapons Procurement, Navy; 2234 @ Weapons Procurement, Navy | bli_citation |
+| 2 | 0604258N | Navy | Target Systems Development | 2280 @ Weapons Procurement, Navy | bli_citation |
+| 3 | 0603596N | Navy | LCS Mission Modules | 1600 @ Other Procurement, Navy | bli_citation |
+| 4 | 0604777N | Navy | Navigation/ID System | 0840 @ Other Procurement, Navy | bli_citation (NRE realigned between the lines; note it) |
+| 5 | 0603563N | Navy | Ship Concept Advanced Design | 1445 @ Other Procurement, Navy | bli_citation (installation funded from the line; note it) |
+| 6 | 0207146F | Air Force | F-15EX | F015EX @ Aircraft Procurement, Air Force | same_title |
+| 7 | 0207147F | Air Force | Collaborative Combat Aircraft | CCA000 @ Aircraft Procurement, Air Force | same_title |
+| 8 | 0207253F | Air Force | Compass Call | CALL00 @ Aircraft Procurement, Air Force | same_title |
+| 9 | 0204202N | Navy | DDG-1000 | 2119 @ Shipbuilding and Conversion, Navy | same_title |
+| 10 | 0210609A | Army | Paladin Integrated Management (PIM) | 2073GZ0410 @ Procurement of Weapons and Tracked Combat Vehicles, Army | same_title |
+| 11 | 0604274N | Navy | Next Generation Jammer (NGJ) | 0591 @ Aircraft Procurement, Navy | same_title |
+| 12 | 0605028A | Army | Armored Multi-Purpose Vehicle (AMPV) | 2944G80819 @ Procurement of Weapons and Tracked Combat Vehicles, Army | same_title |
+| 13 | 0605231A | Army | Precision Strike Missile (PrSM) | 8540C29600 @ Missile Procurement, Army | same_title |
+| 14 | 0605230F | Air Force | Ground Based Strategic Deterrent | MGBSD0 @ Missile Procurement, Air Force | same_title |
+| 15 | 1203265SF | Space Force | GPS III Space Segment | GPSIII @ Procurement, Space Force | same_title |
+| 16 | 0604618F | Air Force | Joint Direct Attack Munition | 353620 @ Procurement of Ammunition, Air Force | same_title |
+| 17 | 0601102A | Army | Defense Research Sciences | (none) | basic_research |
+| 18 | 0601103A | Army | University Research Initiatives | (none) | basic_research |
+| 19 | 0602702E | Defense-Wide | Tactical Technology | (none) | basic_research |
+| 20 | 0601153N | Navy | Defense Research Sciences | (none) | basic_research |
+
+**Eval (`analysis/transition_eval.py`, pattern `analysis/linker_eval.py`):** for each
+case call `propose_transitions(session, pe, agency, limit=5)`; a `transition` case
+passes when any acceptable `(bli, appropriation)` is in the top 3 (print the rank, the
+strategy, and the confidence); a `no_transition` case passes when no candidate is
+returned at or above `CONFIDENCE_FLOOR` (print the top candidate and confidence if one
+slipped through). Print recall@3 over the 16 positives, negatives passed of 4, and the
+per-class breakdown. **Exit 1 if recall@3 < 0.6 or any negative fails; print the numbers
+honestly whatever they are.** State the expected result in the docstring after running
+it. (The citation cases are found by the same regex that built the golden set, so their
+recall is by construction; the value of the eval is the title cases, the negatives, and
+regression protection. Say so in the docstring.)
+
+**Tests (`tests/test_transition.py`, in-memory session seeded with a `SourceDocument`,
+a few `ProgramElement` rows, `ProcurementLine` rows, and one `PEAccomplishment`; no
+model needed for the first three):** exact-title FUZZY hit ranks first with confidence
+≥ 0.95; a `PEAccomplishment` citing `BLI 2280` yields a NARRATIVE candidate with the
+verbatim sentence and `source_file`; a basic-research PE with no similar title returns
+`[]`; two titles within 0.1 of each other mark the top candidate `ambiguous`; a
+"Classified Programs" PE returns `[]`. The SEMANTIC strategy is covered by the eval, not
+by unit tests, so the suite stays model-free.
+
+**Definition of done:** the golden file holds exactly the twenty cases above with
+verbatim quotes on the five citation cases; `python analysis/transition_eval.py` exits 0
+and its docstring states the measured numbers; every candidate carries a strategy and a
+confidence, NARRATIVE candidates carry evidence text and source; ambiguity is flagged;
+`python analysis/linker_eval.py` still passes 11/11 (nothing under `matching/` changed);
+`python -m pytest -q` passes; no UI.
 
 **Verify:**
 ```bash
-python analysis/transition_eval.py
-python analysis/linker_eval.py        # matchers were touched only if this still passes 11/11
 python -m pytest -q
+python analysis/transition_eval.py
+python analysis/linker_eval.py
+python -c "import sys, time; sys.path.insert(0,'.'); from storage.db import get_engine, get_session_factory; import config; from analysis.transition import propose_transitions; S=get_session_factory(get_engine(f\"sqlite:///{(config.PROCESSED_DIR/'usg_budgets.db').as_posix()}\")); s=S(); propose_transitions(s,'0207146F','Air Force'); t=time.perf_counter(); c=propose_transitions(s,'0207146F','Air Force'); print(f'{(time.perf_counter()-t)*1000:.0f} ms', [(x.bli, x.strategy, round(x.confidence,2), x.ambiguous) for x in c])"
 ```
 
 ### T10c — Transition panel
 
-**Files:** `app.py` (Program Finder → Funding profile tab, new expander at the bottom
-titled "Did it transition to procurement? (inference)").
+**Files:** `app.py` (Program Finder → Funding sub-tab, a new expander after the
+"Underlying funding table" expander and before the Plans & Work sub-tab begins),
+`tests/test_app_smoke.py` (one new test).
 **Depends on:** T10b merged.
 
-**Definition of done:** every candidate shows confidence, strategy, and its evidence
-sentence; the expander title contains the word "inference"; ambiguous candidates render
-with the text "ambiguous"; no candidate is shown without evidence or a similarity score;
-clicked through in a browser.
+**Do:** `with st.expander("Did it transition to procurement? (inference)"):` a caption
+stating this is a lead generator with no key join between RDT&E and procurement; call
+`propose_transitions` (wrap in a `@st.cache_data(ttl=3600)` accessor keyed on PE and
+agency; it returns dataclasses, so convert to dicts inside the accessor); if empty,
+`st.caption("No procurement line resembles this program's title, and no narrative cites
+a BLI.")`; otherwise a `st.dataframe` with columns Line item, Appropriation, BLI,
+Confidence (two decimals), Strategy, Ambiguous ("ambiguous" or ""), Evidence source, and
+under it one `st.expander(f"Evidence: {bli}")` per NARRATIVE candidate holding the
+verbatim sentence via `escape_dollars`. `render_table_downloads` on the table with the
+program's funding sources plus the P-1 source documents (`document_type == "P1"`).
+
+**Test:** `test_transition_panel_renders_inference_label(monkeypatch)`: `HF_HUB_OFFLINE=1`,
+`default_timeout=120`, query params `tab=finder`, `pe=0207146F`, `agency=Air Force`; run;
+assert an expander label contains "inference"; assert "F015EX" appears in a dataframe
+within the Funding sub-tab; then the same for `pe=0601102A`, `agency=Army` asserting the
+"No procurement line" caption; main tab labels unchanged.
+
+**Definition of done:** every candidate shows confidence, strategy, and (for NARRATIVE)
+its evidence sentence; the expander title contains "inference"; ambiguous candidates show
+the word "ambiguous"; no candidate renders without a strategy and a score; the smoke
+test passes; clicked through in a real browser on PE 0207146F and PE 0601102A, and the
+Program Finder tab stays selected.
 
 ---
 
