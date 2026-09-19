@@ -72,7 +72,8 @@ tab-reordering bug reached `main` — it passed the smoke test and nobody clicke
 | T14c Ask-the-corpus UI | shipped | "Ask the justification books" expander on Program Finder; key-less path verified by AppTest and browser; cold/warm AI paths verified live (one call, $0.0135, 2,491 thinking tokens); commit `f1088cb` |
 | T15a Structured-fact schema | shipped | `NarrativeFact` + `narrative_fact_hash()` in `storage/db.py`, compatibility test proves `create_all` adds the table to an existing DB; docs updated; commit `d15874f` |
 | T15b Batch extraction job | shipped | `analysis/narrative_extract.py` + `narrative_extractions` ledger; 50 narratives -> 25 verbatim-verified facts for $0.0396 (thinking capped); archive 15 tables; commits `f23ad7f` + `5f32ac6`, merged as a merge commit after a failed fast-forward |
-| T10b–T10c | **open** | this document. Next: T10b (T10a's golden set folded into it; spec re-verified 2026-09-19), then T10c. Roadmap T8–T15 complete. |
+| T10b Transition candidates + golden set + eval | shipped | `analysis/transition.py` (NARRATIVE/FUZZY/SEMANTIC + research rule), 20-case golden set, recall@3 16/16, negatives 4/4, 55 ms/query; commit `38ae87a` |
+| T10c | **open** | this document. Next: T10c transition panel (spec written 2026-09-19). Roadmap T8–T15 complete. |
 
 Database ground truth, queried 2026-09-09:
 
