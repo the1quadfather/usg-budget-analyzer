@@ -452,6 +452,102 @@ def run() -> int:
            sum(row.est_cost_usd for row in narrative_fresh) < 0.01),
           (2, True))
 
+    # Structured fact extraction is non-grounded and its durable extraction
+    # row, rather than the disposable AI cache, makes an empty or non-empty
+    # result resumable. Exercise the run-level verification and write helpers
+    # with a fake response containing one supported and one invented sentence.
+    from analysis.narrative_extract import (
+        build_worklist,
+        verify_facts,
+        write_results,
+    )
+    from storage.db import (
+        NarrativeExtraction,
+        NarrativeFact,
+        PENarrative,
+    )
+
+    check("enricher: extract_facts task is not grounded",
+          "extract_facts" not in config.GROUNDED_TASKS, True)
+
+    extraction_text = "Acme Systems will test Falcon at White Sands."
+    with ab.session_factory()() as s:
+        s.add(PENarrative(
+            pe_number="0601234A",
+            agency="Army",
+            fiscal_year=2027,
+            project_number="",
+            description=extraction_text,
+            source_file="synthetic.xml",
+        ))
+        s.commit()
+        extraction_work = build_worklist(s, limit=1)
+
+    class _FakeExtractionResp:
+        candidates = [_FakeAdjCandidate()]
+        usage_metadata = _FakeUsage()
+        text = json.dumps({"facts": [
+            {
+                "fact_type": "contractor",
+                "value": "Acme Systems",
+                "sentence": extraction_text,
+            },
+            {
+                "fact_type": "location",
+                "value": "Edwards Air Force Base",
+                "sentence": "Testing occurs at Edwards Air Force Base.",
+            },
+        ]})
+
+    extraction_response = _FakeExtractionResp()
+    _FakeModels.generate_content = lambda self, **kw: (
+        calls.__setitem__("n", calls["n"] + 1) or extraction_response)
+    before = calls["n"]
+    extraction_result = enricher.extract_facts(
+        extraction_work[0]["narrative_table"],
+        extraction_work[0]["narrative_id"],
+        extraction_work[0]["text"],
+        user_id="extract",
+        credits=99,
+    )
+    kept, dropped = verify_facts(
+        extraction_result.payload["facts"], extraction_work[0]["text"]
+    )
+    with ab.session_factory()() as s:
+        extraction_spend = s.execute(
+            select(AISpendRow).where(
+                AISpendRow.task == "extract_facts"
+            )
+        ).scalars().one()
+        inserted = write_results(
+            s,
+            extraction_work[0],
+            kept,
+            dropped,
+            {
+                "input_tokens": extraction_spend.input_tokens,
+                "output_tokens": extraction_spend.output_tokens,
+                "thought_tokens": extraction_spend.thought_tokens,
+            },
+            extraction_spend.est_cost_usd,
+        )
+        fact_rows = list(s.execute(select(NarrativeFact)).scalars())
+        extraction_rows = list(s.execute(
+            select(NarrativeExtraction)
+        ).scalars())
+        remaining = build_worklist(s, limit=1)
+    check("enricher: extract_facts fake client is called once",
+          calls["n"] - before, 1)
+    check("enricher: extraction keeps one fact and drops one",
+          (inserted, len(fact_rows), len(extraction_rows),
+           extraction_rows[0].fact_count,
+           extraction_rows[0].dropped_count),
+          (1, 1, 1, 1, 1))
+    check("enricher: extraction ledger records thinking tokens",
+          extraction_rows[0].thought_tokens, 100)
+    check("enricher: completed extraction leaves no repeat work",
+          remaining, [])
+
     # Ledger reflects the grounded queries so grounding cost is visible - and
     # ONLY the grounded ones: three grounded research calls (carol, dave, and
     # carol's forced refresh) at 3 queries each. The structuring pass, the

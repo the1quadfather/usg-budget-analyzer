@@ -34,6 +34,8 @@ DATA_TABLES = (
     "pe_narratives",
     "pe_accomplishments",
     "pe_lineage",
+    "narrative_facts",
+    "narrative_extractions",
 )
 RUNTIME_TABLES = (
     "ai_cache",

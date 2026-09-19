@@ -242,6 +242,32 @@ class NarrativeFact(Base):
     )
 
 
+class NarrativeExtraction(Base):
+    """One completed extraction call per narrative text, whether or not it yielded facts."""
+
+    __tablename__ = "narrative_extractions"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    narrative_table: Mapped[str] = mapped_column(String(30))
+    narrative_id: Mapped[int] = mapped_column(Integer)
+    text_hash: Mapped[str] = mapped_column(String(64))
+    model: Mapped[str] = mapped_column(String(100))
+    prompt_version: Mapped[int] = mapped_column(Integer)
+    fact_count: Mapped[int] = mapped_column(Integer)
+    dropped_count: Mapped[int] = mapped_column(Integer)
+    input_tokens: Mapped[int] = mapped_column(Integer)
+    output_tokens: Mapped[int] = mapped_column(Integer)
+    thought_tokens: Mapped[int] = mapped_column(Integer)
+    est_cost_usd: Mapped[float] = mapped_column(Float)
+    extracted_at: Mapped[datetime] = mapped_column(default=_utcnow)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "narrative_table", "narrative_id", "model", "prompt_version"
+        ),
+    )
+
+
 def narrative_fact_hash(narrative_table: str, narrative_id: int, fact_type: str,
                         value: str, char_start: int, char_end: int) -> str:
     """sha256 over the tab-joined identity fields; the idempotency key for T15b."""

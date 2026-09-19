@@ -66,6 +66,7 @@ _METERING_FAILED = False
 # answers from the old prompt are never served.
 PROMPT_VERSIONS = {
     "adjudicate": 1,
+    "extract_facts": 1,
     "narrative_answer": 1,
     "find_open_source_hits": 1,
     "annual_signal": 1,
@@ -81,6 +82,25 @@ ADJUDICATION_SCHEMA = {
         "no_match": {"type": "BOOLEAN"},
     },
     "required": ["pe_number", "agency", "confidence", "rationale", "no_match"],
+}
+
+EXTRACTION_SCHEMA = {
+    "type": "OBJECT",
+    "properties": {
+        "facts": {
+            "type": "ARRAY",
+            "items": {
+                "type": "OBJECT",
+                "properties": {
+                    "fact_type": {"type": "STRING"},
+                    "value": {"type": "STRING"},
+                    "sentence": {"type": "STRING"},
+                },
+                "required": ["fact_type", "value", "sentence"],
+            },
+        },
+    },
+    "required": ["facts"],
 }
 
 ANSWER_SCHEMA = {
@@ -384,6 +404,77 @@ class GeminiEnricher:
 
         return self._governed("adjudicate", params, user_id, allow_fresh,
                               credits, call, empty=None, force=force)
+
+    def extract_facts(
+        self,
+        narrative_table: str,
+        narrative_id: int,
+        text: str,
+        *,
+        user_id: str = "extract",
+        allow_fresh: bool = True,
+        credits: Optional[int] = None,
+    ) -> EnrichmentResult:
+        """Extract structured facts from one narrative without grounding."""
+        from storage.db import FACT_TYPES
+
+        params = {
+            "table": narrative_table,
+            "id": narrative_id,
+            "text": hashlib.sha256(text.encode("utf-8")).hexdigest()[:16],
+        }
+
+        def call():
+            from google.genai import errors, types
+
+            prompt = (
+                "You are extracting structured facts from one US defense "
+                "budget narrative. Return only facts supported by the "
+                "narrative and never invent. Allowed fact types are: "
+                f"{', '.join(FACT_TYPES)}. For each fact return fact_type, "
+                "a normalised value, and the verbatim sentence it came "
+                "from. For contractor, value is the organisation name; "
+                "for transition, the receiving programme or organisation; "
+                "for test_event, the event name; for location, the place. "
+                "Return an empty facts list when none are present.\n\n"
+                f"Narrative:\n{text}"
+            )
+
+            def generate(thinking_config):
+                return self.client.models.generate_content(
+                    model=self.model,
+                    contents=prompt,
+                    config=types.GenerateContentConfig(
+                        response_mime_type="application/json",
+                        response_schema=EXTRACTION_SCHEMA,
+                        temperature=0.0,
+                        max_output_tokens=1024,
+                        thinking_config=thinking_config,
+                    ),
+                )
+
+            try:
+                resp = generate(types.ThinkingConfig(thinking_budget=512))
+            except errors.ClientError as exc:
+                if getattr(exc, "code", None) != 400:
+                    raise
+                logger.warning(
+                    "Gemini rejected thinking_budget=512; retrying "
+                    "extract_facts with thinking_level='low'."
+                )
+                resp = generate(types.ThinkingConfig(thinking_level="low"))
+            parsed = json.loads(resp.text)
+            return {"facts": parsed["facts"]}, _usage(resp)
+
+        return self._governed(
+            "extract_facts",
+            params,
+            user_id,
+            allow_fresh,
+            credits,
+            call,
+            empty=None,
+        )
 
     def narrative_answer(
         self,

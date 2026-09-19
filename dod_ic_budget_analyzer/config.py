@@ -157,6 +157,7 @@ AI_FREE_CREDITS_PER_MONTH = 5
 # Gemini API terms permit.
 AI_CACHE_TTL_DAYS = {
     "adjudicate": 365,           # deterministic at temperature 0
+    "extract_facts": 365,        # deterministic over one narrative text
     "narrative_answer": 365,     # deterministic over a fixed passage set
     "find_open_source_hits": 14,  # news goes stale
     "annual_signal": 90,          # budget cycles are annual

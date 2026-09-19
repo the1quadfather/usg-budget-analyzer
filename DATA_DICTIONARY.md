@@ -2,13 +2,12 @@
 
 This document describes the SQLite database shipped with the repository at
 `dod_ic_budget_analyzer/data/processed/usg_budgets.db.gz`. The snapshot was checked on
-2026-09-18 at repository commit `b1a3885e4bec042db6ad5709c6f862844fc5bdd8`
-(`codex/t11e` when inspected). The archive blob is
-`f2aa7a54e64453e05351a4a8f928d961a85295ce`; it was last rebuilt in commit
-`b1a3885e4bec042db6ad5709c6f862844fc5bdd8`. The archive contains 13 tables and 43
-indexes. A freshly opened database also creates the empty `narrative_facts` table (14).
+2026-09-18 on `codex/t15b`. The archive blob is
+`8b89d3096547eba7d8b40455909e8012146f9c15`; it was last rebuilt in commit
+`b1a3885e4bec042db6ad5709c6f862844fc5bdd8`. The archive contains 15 tables and 48
+indexes.
 
-The nine data tables below ship with records. Four additional runtime table schemas ship
+The eleven data tables below ship with records. Four additional runtime table schemas ship
 empty and are documented separately under [Runtime tables, not shipped](#runtime-tables-not-shipped).
 
 ## Row counts and origins
@@ -27,7 +26,8 @@ database. Runtime activity can add rows to a working database after it is expand
 | `pe_narratives` | 18,268 | R-2 justification books in XML and PDF |
 | `pe_accomplishments` | 101,219 | R-2 accomplishment and planned-program line items |
 | `pe_lineage` | 405 | Derived from R-1 funding and R-2 narratives |
-| `narrative_facts` | 0 (not yet in the archive) | Derived by T15b extraction |
+| `narrative_facts` | 25 | Verified structured facts derived by T15b extraction |
+| `narrative_extractions` | 50 | Durable completion ledger for T15b extraction |
 | `ai_cache` | 0 | Runtime only; reset before every archive build |
 | `ai_spend` | 0 | Runtime only; reset before every archive build |
 | `ai_user_history` | 0 | Runtime only; reset before every archive build |
@@ -308,8 +308,8 @@ derived table, not a source exhibit: `analysis/lineage.py` derives it from
 ## `narrative_facts`
 
 Structured facts extracted from narrative sentences. `Base.metadata.create_all` creates
-this empty table the first time the database is opened; it has 0 rows and is absent from
-the tracked archive until T15b populates it and rebuilds the archive.
+the table, and the tracked archive contains the 25 verified facts produced by the first
+bounded T15b extraction run.
 
 | Column | SQL type | Nullable | Unit or meaning |
 |---|---|:---:|---|
@@ -328,12 +328,34 @@ the tracked archive until T15b populates it and rebuilds the archive.
 | `content_hash` | `VARCHAR(64)` | No | Unique tab-joined identity hash for idempotency |
 | `extracted_at` | `DATETIME` | No | UTC extraction timestamp |
 
+## `narrative_extractions`
+
+Durable completion ledger for narrative extraction, including narratives that produced
+zero facts. Its 50 rows allow reruns to skip completed source text after the disposable
+AI cache and spend ledger are scrubbed from a release archive.
+
+| Column | SQL type | Nullable | Unit or meaning |
+|---|---|:---:|---|
+| `id` | `INTEGER` | No | Primary-key row identifier |
+| `narrative_table` | `VARCHAR(30)` | No | Source table; currently `pe_narratives` |
+| `narrative_id` | `INTEGER` | No | Row identifier in `narrative_table`; deliberately not a foreign key |
+| `text_hash` | `VARCHAR(64)` | No | SHA-256 of the complete source text |
+| `model` | `VARCHAR(100)` | No | Extraction model identifier |
+| `prompt_version` | `INTEGER` | No | Extraction prompt/schema version |
+| `fact_count` | `INTEGER` | No | Verified facts returned for the narrative |
+| `dropped_count` | `INTEGER` | No | Returned facts rejected by local verification |
+| `input_tokens` | `INTEGER` | No | Provider-reported input-token count |
+| `output_tokens` | `INTEGER` | No | Provider-reported output-token count |
+| `thought_tokens` | `INTEGER` | No | Provider-reported reasoning-token count |
+| `est_cost_usd` | `FLOAT` | No | Estimated call cost in US dollars |
+| `extracted_at` | `DATETIME` | No | UTC extraction timestamp |
+
 ## Derived tables
 
-`pe_lineage` is the only shipped data table whose rows are analytical output rather than
-direct source observations. Its evidence remains traceable to R-1 funding series or R-2
-narratives through `method`, `evidence_source`, and `evidence_text`. Rebuilding it replaces
-the detector-produced rows; it does not alter the underlying R-1 or R-2 tables.
+`pe_lineage`, `narrative_facts`, and `narrative_extractions` are the shipped data tables
+whose rows are analytical output rather than direct source observations. Lineage evidence
+remains traceable through `method`, `evidence_source`, and `evidence_text`; extracted facts
+remain traceable through their source table, row, verbatim sentence, and character offsets.
 
 ## Runtime tables, not shipped
 
