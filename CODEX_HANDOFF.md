@@ -51,7 +51,7 @@ numbers are correct; the prose in README is not always.**
 
 | Fact | Value |
 |---|---|
-| Tables | `ai_cache`, `ai_spend`, `ai_user_history`, `funding_lines`, `narrative_facts` (T15a; 0 rows, not in the archive until T15b), `pe_accomplishments`, `pe_congressional_actions`, `pe_execution`, `pe_lineage`, `pe_narratives`, `procurement_lines`, `program_elements`, `search_log`, `source_documents` |
+| Tables | `ai_cache`, `ai_spend`, `ai_user_history`, `funding_lines`, `narrative_extractions` (T15b; 50 rows), `narrative_facts` (T15b; 25 rows), `pe_accomplishments`, `pe_congressional_actions`, `pe_execution`, `pe_lineage`, `pe_narratives`, `procurement_lines`, `program_elements`, `search_log`, `source_documents` |
 | `program_elements` | 2,131 rows / **2,055 distinct** `pe_number` |
 | `funding_lines` | 55,652 rows, **FY1996–FY2027** (README says FY1998 — wrong); `pb_cycle` 1998–2027 |
 | `funding_lines.funding_type` | six values: `PY Actual`, `CY Request`, `BY Request`, and the `Mandatory` variant of each |

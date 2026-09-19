@@ -233,6 +233,12 @@ golden-set eval — run it after any matcher change:
 python analysis/linker_eval.py
 ```
 
+Structured narrative facts are a bounded, paid build step over PE-level R-2 text. Run
+`python -m analysis.narrative_extract --dry-run --limit N` to inspect the worklist and
+worst-case cost before using `--run --limit N`; `narrative_extractions` durably records
+completed text even when it yields no facts, so later batches resume after runtime tables
+are cleared.
+
 **Rebuild the shipped archive after any ingest**, or the next clone gets stale
 data — the raw `.db` is gitignored and only the `.gz` is published:
 
