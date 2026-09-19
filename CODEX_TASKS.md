@@ -70,7 +70,8 @@ tab-reordering bug reached `main` — it passed the smoke test and nobody clicke
 | T14a Local retrieval over narratives | shipped | `analysis/narrative_qa.py`, tracked 26,702-passage index (51 MB with text), eval 5/5 gated at ~14 ms/query; commit `bbfec92` |
 | T14b Cited synthesis | shipped | `narrative_answer` task on the governed path, `validate_answer` enforces verbatim quotes, 6 governance checks (57/57); commit `3bb54cc` |
 | T14c Ask-the-corpus UI | shipped | "Ask the justification books" expander on Program Finder; key-less path verified by AppTest and browser; cold/warm AI paths verified live (one call, $0.0135, 2,491 thinking tokens); commit `f1088cb` |
-| T10, T15 | **open** | this document. Next: T15a (spec re-verified 2026-09-19); T10a is research, not a Codex task |
+| T15a Structured-fact schema | shipped | `NarrativeFact` + `narrative_fact_hash()` in `storage/db.py`, compatibility test proves `create_all` adds the table to an existing DB; docs updated; commit `d15874f` |
+| T10, T15b | **open** | this document. Next: T15b (spec to be re-verified before hand-off); T10a is research, not a Codex task |
 
 Database ground truth, queried 2026-09-09:
 
