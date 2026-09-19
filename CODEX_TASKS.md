@@ -70,7 +70,7 @@ tab-reordering bug reached `main` — it passed the smoke test and nobody clicke
 | T14a Local retrieval over narratives | shipped | `analysis/narrative_qa.py`, tracked 26,702-passage index (51 MB with text), eval 5/5 gated at ~14 ms/query; commit `bbfec92` |
 | T14b Cited synthesis | shipped | `narrative_answer` task on the governed path, `validate_answer` enforces verbatim quotes, 6 governance checks (57/57); commit `3bb54cc` |
 | T14c Ask-the-corpus UI | shipped | "Ask the justification books" expander on Program Finder; key-less path verified by AppTest and browser; cold/warm AI paths verified live (one call, $0.0135, 2,491 thinking tokens); commit `f1088cb` |
-| T10, T15 | **open** | this document. Next: T15a (spec to be re-verified before hand-off); T10a is research, not a Codex task |
+| T10, T15 | **open** | this document. Next: T15a (spec re-verified 2026-09-19); T10a is research, not a Codex task |
 
 Database ground truth, queried 2026-09-09:
 
@@ -1703,27 +1703,122 @@ python -m streamlit run app.py --server.port 8501     # then click through as de
 
 ### T15a — Structured-fact schema
 
-**Files:** `storage/db.py`, `tests/test_regressions.py`.
+**Files:** `storage/db.py` (the model, a `FactType` alias, and a `FACT_TYPES` tuple),
+`tests/test_regressions.py` (one new test class), `DATA_DICTIONARY.md` (one new table
+section, one row in the row-count table, one sentence in the header), `CODEX_HANDOFF.md`
+§1 (the "Tables" row). **Not** `scripts/build_release.py` and **not** the archive: the
+release script counts every table in its `DATA_TABLES` tuple against the decompressed
+tracked archive, and this task does not rebuild the archive, so adding the table there
+would make the release script fail on a table the archive does not have. T15b, which
+writes rows and rebuilds the archive, adds it to `DATA_TABLES` and to the release
+manifest.
 **Depends on:** nothing.
+**Rewritten 2026-09-19** against the repo: the first version was a field list with a
+two-line definition of done. It implied a foreign key to two tables (impossible), named
+no hash rule (so T15b's idempotency would have been improvised), and did not say how the
+new table reaches an existing database or the documentation.
+
+**Verified facts (2026-09-19):**
+
+- `storage/db.get_engine()` calls `_ensure_schema_compatibility`, which starts with
+  `Base.metadata.create_all(engine)`. A new model therefore appears in any existing
+  database the first time the app or a script opens it. No migration code is needed for
+  a new table; the additive-column logic in that function is for existing tables only.
+- The shipped archive (`f2aa7a54…`, 13 tables) is not rebuilt by this task. A freshly
+  opened database has 14 tables; the archive keeps 13 until T15b rebuilds it. Say
+  exactly that in `DATA_DICTIONARY.md`.
+- Model conventions (`PELineage` is the template): `id` autoincrement primary key,
+  `content_hash: String(64), unique=True, index=True`, a UTC timestamp column with
+  `default=_utcnow`. `storage/db.py` imports `Float, ForeignKey, Integer, String, Text,
+  UniqueConstraint` from SQLAlchemy and `List, Optional` from `typing`; add `Index` and
+  `Literal` as needed.
+- `tests/test_regressions.py` is `unittest`-style with one class per concern;
+  `ProcurementSchemaRegressionTests.test_compatibility_migrates_and_enforces_row_identity`
+  already shows the pattern of building a database that lacks something, then opening it
+  through `get_engine()` to prove the compatibility step fixes it. Mirror it.
+- `pe_narratives.id` and `pe_accomplishments.id` are both integer primary keys; a fact
+  may come from either, so the reference is a `(narrative_table, narrative_id)` pair, not
+  a foreign key.
+
+**Model (in `storage/db.py`, after `PELineage`):**
 
 ```python
 FactType = Literal["contractor", "transition", "test_event", "location"]
+FACT_TYPES: tuple[str, ...] = ("contractor", "transition", "test_event", "location")
 
 class NarrativeFact(Base):
+    """One structured fact extracted from a narrative sentence (T15b fills it)."""
     __tablename__ = "narrative_facts"
-    id: Mapped[int]
-    narrative_id: Mapped[int]          # FK pe_narratives.id or pe_accomplishments.id
-    narrative_table: Mapped[str]       # "pe_narratives" | "pe_accomplishments"
-    pe_number: Mapped[str]; agency: Mapped[str]; fiscal_year: Mapped[int]
-    fact_type: Mapped[str]             # FactType
-    value: Mapped[str]                 # normalised string, e.g. "Lockheed Martin"
-    sentence: Mapped[str]              # verbatim sentence the fact came from
-    char_start: Mapped[int]; char_end: Mapped[int]   # offsets of `sentence` in the source text
-    model: Mapped[str]                 # config.GEMINI_MODEL at extraction time
-    content_hash: Mapped[str]; extracted_at: Mapped[datetime]
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    narrative_table: Mapped[str] = mapped_column(String(30))     # "pe_narratives" | "pe_accomplishments"
+    narrative_id: Mapped[int] = mapped_column(Integer)           # that table's id; no FK, see docstring
+    pe_number: Mapped[str] = mapped_column(String(50), index=True)
+    agency: Mapped[str] = mapped_column(String(100))
+    fiscal_year: Mapped[int] = mapped_column(Integer)
+    fact_type: Mapped[str] = mapped_column(String(20))           # one of FACT_TYPES
+    value: Mapped[str] = mapped_column(String(500))              # normalised, e.g. "Lockheed Martin"
+    sentence: Mapped[str] = mapped_column(Text)                  # verbatim sentence the fact came from
+    char_start: Mapped[int] = mapped_column(Integer)             # offsets of `sentence` in the source text
+    char_end: Mapped[int] = mapped_column(Integer)
+    model: Mapped[str] = mapped_column(String(100))              # config.GEMINI_MODEL at extraction time
+    content_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    extracted_at: Mapped[datetime] = mapped_column(default=_utcnow)
+
+    __table_args__ = (
+        Index("ix_narrative_facts_source", "narrative_table", "narrative_id"),
+    )
 ```
 
-**Definition of done:** schema creates on an existing DB; a round-trip test.
+Add a module-level helper next to the model so T15b and the test agree on the hash:
+
+```python
+def narrative_fact_hash(narrative_table: str, narrative_id: int, fact_type: str,
+                        value: str, char_start: int, char_end: int) -> str:
+    """sha256 over the tab-joined identity fields; the idempotency key for T15b."""
+```
+
+(`"\t".join([narrative_table, str(narrative_id), fact_type, value, str(char_start),
+str(char_end)])`, UTF-8, hex digest.)
+
+**Test (`tests/test_regressions.py`, new class `NarrativeFactSchemaRegressionTests`):**
+
+1. In a temporary directory, create a SQLite file with every model **except**
+   `narrative_facts` (`Base.metadata.create_all(engine, tables=[t for t in
+   Base.metadata.sorted_tables if t.name != "narrative_facts"])`), dispose, then open
+   it with `get_engine(f"sqlite:///{path}")` and assert
+   `inspect(engine).has_table("narrative_facts")`. This is "schema creates on an
+   existing DB".
+2. Round trip on an in-memory database: insert one `PENarrative` (with a `description`
+   of two sentences), then one `NarrativeFact` whose `narrative_table` is
+   `"pe_narratives"`, `narrative_id` is that row's id, `sentence` equals
+   `description[char_start:char_end]`, `fact_type` is `"contractor"`, and
+   `content_hash` comes from `narrative_fact_hash(...)`. Read it back and assert every
+   field, and assert `description[char_start:char_end] == fact.sentence`.
+3. Inserting a second fact with the same `content_hash` raises `IntegrityError`.
+4. `set(FACT_TYPES) == {"contractor", "transition", "test_event", "location"}`.
+
+**Docs:** `DATA_DICTIONARY.md` gains a `## narrative_facts` section after `pe_lineage`
+with the column table in the same format, a first paragraph saying it is created by
+`create_all` on first open, has 0 rows, and is absent from the tracked archive until
+T15b rebuilds it; one row in the row-count table (`narrative_facts | 0 (not yet in the
+archive) | Derived by T15b extraction`); and the header sentence "The archive contains 13
+tables and 43 indexes." extended with "A freshly opened database also creates the empty
+`narrative_facts` table (14)." `CODEX_HANDOFF.md` §1 "Tables" row gains
+`narrative_facts` (T15a; 0 rows, not in the archive until T15b).
+
+**Definition of done:** the model and helper exist as specified; the four test cases
+pass; `python -m pytest -q` passes; opening the working database prints `True` for the
+table (verify command below); the two documents are updated; `git status --short` after
+the commit lists nothing; the archive blob and `scripts/build_release.py` are unchanged.
+
+**Verify:**
+```bash
+python -m pytest -q
+python -c "import sys; sys.path.insert(0,'.'); from sqlalchemy import inspect; from storage.db import get_engine; import config; e=get_engine(f\"sqlite:///{(config.PROCESSED_DIR/'usg_budgets.db').as_posix()}\"); print(inspect(e).has_table('narrative_facts'))"   # True
+git diff --stat HEAD~1 -- dod_ic_budget_analyzer/data/processed/usg_budgets.db.gz dod_ic_budget_analyzer/scripts/build_release.py   # expect no output
+git status --short
+```
 
 ### T15b — Batch extraction job
 
