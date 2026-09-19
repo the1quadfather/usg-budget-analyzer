@@ -2,9 +2,10 @@
 
 This document describes the SQLite database shipped with the repository at
 `dod_ic_budget_analyzer/data/processed/usg_budgets.db.gz`. The snapshot was checked on
-2026-09-18 on `codex/t15b`. The archive blob is
+2026-09-18 at repository commit `f23ad7fdaf8886c4fd1d0ded96486ff54b609ccc`
+(`codex/t15b` when inspected). The archive blob is
 `8b89d3096547eba7d8b40455909e8012146f9c15`; it was last rebuilt in commit
-`b1a3885e4bec042db6ad5709c6f862844fc5bdd8`. The archive contains 15 tables and 48
+`f23ad7fdaf8886c4fd1d0ded96486ff54b609ccc`. The archive contains 15 tables and 48
 indexes.
 
 The eleven data tables below ship with records. Four additional runtime table schemas ship
