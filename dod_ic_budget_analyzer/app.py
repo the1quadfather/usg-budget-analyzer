@@ -35,6 +35,7 @@ from analysis.provenance import (
     csv_with_provenance,
     execution_sources,
     funding_sources,
+    procurement_sources,
     source_summary,
     xlsx_with_provenance,
 )
@@ -567,6 +568,17 @@ def fetch_funding_sources(
             agencies=agencies or None,
             fiscal_years=fiscal_years,
         )
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def fetch_transition_candidates(pe_number: str, agency: str) -> list[dict]:
+    from analysis.transition import propose_transitions
+    SessionFactory = init_db_connection()
+    with SessionFactory() as session:
+        return [
+            dataclasses.asdict(candidate)
+            for candidate in propose_transitions(session, pe_number, agency)
+        ]
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -1637,6 +1649,85 @@ with tab_finder:
                             name=f"{sel['pe_number']}_funding_history",
                             key=f"funding::{sel['pe_number']}::{sel['agency']}",
                             sources=program_sources,
+                        )
+
+                with st.expander(
+                    "Did it transition to procurement? (inference)"
+                ):
+                    st.caption(
+                        "This is a lead generator, not a confirmed linkage: "
+                        "RDT&E Program Elements and procurement lines have "
+                        "no shared key."
+                    )
+                    from analysis.transition import is_research_pe
+                    transition_candidates = fetch_transition_candidates(
+                        sel["pe_number"], sel["agency"]
+                    )
+                    if is_research_pe(sel["pe_number"]):
+                        st.caption(
+                            "Basic and applied research (budget activities "
+                            "1–2) cannot fund procurement, so no transition "
+                            "is inferred."
+                        )
+                    elif not transition_candidates:
+                        st.caption(
+                            "No procurement line resembles this program's "
+                            "title, and no narrative cites a BLI."
+                        )
+                    else:
+                        transition_table = pd.DataFrame([{
+                            "Line item": candidate["line_item_title"],
+                            "Appropriation": candidate["appropriation"],
+                            "BLI": candidate["bli"],
+                            "Confidence": f"{candidate['confidence']:.2f}",
+                            "Strategy": candidate["strategy"],
+                            "Ambiguous": (
+                                "ambiguous" if candidate["ambiguous"] else ""
+                            ),
+                            "Evidence source": (
+                                candidate["evidence_source"] or ""
+                            ),
+                        } for candidate in transition_candidates])
+                        st.dataframe(
+                            transition_table, width="stretch", hide_index=True
+                        )
+                        for candidate in transition_candidates:
+                            if candidate["strategy"] != "NARRATIVE":
+                                continue
+                            with st.expander(
+                                f"Evidence: {candidate['bli']}"
+                            ):
+                                st.write(escape_dollars(
+                                    candidate["evidence_text"]
+                                ))
+                        with SessionFactory() as session:
+                            transition_sources = (
+                                include_deflator_source(
+                                    fetch_funding_sources(
+                                        pe_numbers=(sel["pe_number"],),
+                                        agencies=(sel["agency"],),
+                                    )
+                                )
+                                + procurement_sources(
+                                    session,
+                                    blis=[
+                                        candidate["bli"]
+                                        for candidate in transition_candidates
+                                    ],
+                                    appropriations=[
+                                        candidate["appropriation"]
+                                        for candidate in transition_candidates
+                                    ],
+                                )
+                            )
+                        render_table_downloads(
+                            transition_table,
+                            name=f"{sel['pe_number']}_procurement_inference",
+                            key=(
+                                f"transition::{sel['pe_number']}::"
+                                f"{sel['agency']}"
+                            ),
+                            sources=transition_sources,
                         )
 
                 st.divider()

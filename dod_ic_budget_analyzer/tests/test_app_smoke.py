@@ -104,6 +104,55 @@ def test_ask_the_corpus_renders_passages_without_a_key(monkeypatch) -> None:
     assert app.session_state["main_tab"] == "Program Finder"
 
 
+def test_transition_panel_renders_inference_label(monkeypatch) -> None:
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    st.cache_data.clear()
+    st.cache_resource.clear()
+    app_path = Path(__file__).parents[1] / "app.py"
+
+    def render(pe_number: str, agency: str) -> AppTest:
+        app = AppTest.from_file(str(app_path), default_timeout=120)
+        app.query_params["tab"] = "finder"
+        app.query_params["pe"] = pe_number
+        app.query_params["agency"] = agency
+        app.run()
+        assert not app.exception
+        assert _main_tab_labels(app) == MAIN_TAB_LABELS
+        assert app.session_state["main_tab"] == "Program Finder"
+        assert _profile_tab_labels(app) == PROFILE_TAB_LABELS
+        assert any(
+            "inference" in expander.label for expander in app.expander
+        )
+        return app
+
+    transition_app = render("0207146F", "Air Force")
+    funding_tab = next(
+        tab for tab in transition_app.get("tab") if tab.label == "Funding"
+    )
+    assert any(
+        "F015EX" in dataframe.value.to_string()
+        for dataframe in funding_tab.dataframe
+    )
+
+    research_app = render("0601102A", "Army")
+    research_tab = next(
+        tab for tab in research_app.get("tab") if tab.label == "Funding"
+    )
+    assert any(
+        "Basic and applied research" in caption.value
+        for caption in research_tab.caption
+    )
+
+    empty_app = render("0605018F", "Air Force")
+    empty_tab = next(
+        tab for tab in empty_app.get("tab") if tab.label == "Funding"
+    )
+    assert any(
+        "No procurement line" in caption.value
+        for caption in empty_tab.caption
+    )
+
+
 def test_configured_demo_allowlist_fails_closed_for_anonymous_user(
     monkeypatch,
 ) -> None:

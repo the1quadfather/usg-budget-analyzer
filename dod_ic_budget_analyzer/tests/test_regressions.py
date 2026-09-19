@@ -22,7 +22,11 @@ from analysis.gap_analyzer import GapAnalyzer
 from analysis.deflators import apply_deflator, convert_amount
 from analysis.execution_view import ExecutionView
 from analysis.program_linker import ProgramLinker
-from analysis.provenance import csv_with_provenance, funding_sources
+from analysis.provenance import (
+    csv_with_provenance,
+    funding_sources,
+    procurement_sources,
+)
 from analysis.rhetoric_tracker import align_rhetoric_funding
 from analysis.spending_explorer import SpendingExplorer
 from analysis.trend_tracker import TrendTracker
@@ -489,6 +493,52 @@ class ProvenanceRegressionTests(unittest.TestCase):
         self.assertEqual(len(sources), 1)
         self.assertIn("fy2027_r1.xlsx", exported)
         self.assertIn("https://example.test/fy2027_r1.xlsx", exported)
+
+    def test_procurement_export_names_its_p1_source(self):
+        engine = create_engine("sqlite:///:memory:")
+        Base.metadata.create_all(engine)
+        with Session(engine) as session:
+            doc = SourceDocument(
+                filename="fy2027_p1.xlsx",
+                document_type="P1",
+                publication_year=2027,
+                source_url="https://example.test/fy2027_p1.xlsx",
+            )
+            session.add(doc)
+            session.flush()
+            session.add(ProcurementLine(
+                source_document_id=doc.id,
+                bli="F015EX",
+                line_item_title="F-15EX",
+                agency="Air Force",
+                appropriation="Aircraft Procurement, Air Force",
+                budget_activity=1,
+                line_number="1",
+                bsa="01",
+                bsa_title="Aircraft",
+                cost_type="C",
+                cost_type_title="Cost",
+                fiscal_year=2027,
+                funding_type="BY Request",
+                amount_thousands=123.0,
+                quantity=1.0,
+                pb_cycle=2027,
+                content_hash="synthetic-p1-provenance",
+            ))
+            session.commit()
+
+            sources = procurement_sources(
+                session,
+                blis=["F015EX"],
+                appropriations=["Aircraft Procurement, Air Force"],
+            )
+            exported = csv_with_provenance(
+                pd.DataFrame([{"BLI": "F015EX"}]), sources
+            ).decode("utf-8-sig")
+
+        self.assertEqual(len(sources), 1)
+        self.assertEqual(sources[0]["document_type"], "P1")
+        self.assertIn("fy2027_p1.xlsx", exported)
 
 
 class DD1416RegressionTests(unittest.TestCase):

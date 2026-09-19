@@ -9,7 +9,13 @@ import pandas as pd
 from sqlalchemy import select, tuple_
 from sqlalchemy.orm import Session
 
-from storage.db import FundingLine, PEExecution, ProgramElement, SourceDocument
+from storage.db import (
+    FundingLine,
+    PEExecution,
+    ProcurementLine,
+    ProgramElement,
+    SourceDocument,
+)
 
 
 def funding_sources(
@@ -87,6 +93,50 @@ def execution_sources(
             stmt = stmt.where(PEExecution.pe_number.in_(pe_values))
         if agency_values:
             stmt = stmt.where(PEExecution.agency.in_(agency_values))
+    return [
+        {
+            "filename": row.filename,
+            "document_type": row.document_type,
+            "publication_year": row.publication_year,
+            "source_url": row.source_url,
+            "retrieved_at": row.retrieved_at,
+            "processed_date": row.processed_date,
+        }
+        for row in session.execute(stmt)
+    ]
+
+
+def procurement_sources(
+    session: Session,
+    *,
+    blis: Iterable[str] | None = None,
+    appropriations: Iterable[str] | None = None,
+) -> list[dict]:
+    """Return official P-1 workbooks supporting procurement candidates."""
+    stmt = (
+        select(
+            SourceDocument.filename,
+            SourceDocument.document_type,
+            SourceDocument.publication_year,
+            SourceDocument.source_url,
+            SourceDocument.retrieved_at,
+            SourceDocument.processed_date,
+        )
+        .join(
+            ProcurementLine,
+            ProcurementLine.source_document_id == SourceDocument.id,
+        )
+        .distinct()
+        .order_by(SourceDocument.publication_year, SourceDocument.filename)
+    )
+    bli_values = list(blis or [])
+    appropriation_values = list(appropriations or [])
+    if bli_values:
+        stmt = stmt.where(ProcurementLine.bli.in_(bli_values))
+    if appropriation_values:
+        stmt = stmt.where(
+            ProcurementLine.appropriation.in_(appropriation_values)
+        )
     return [
         {
             "filename": row.filename,
