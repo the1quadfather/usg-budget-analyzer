@@ -575,6 +575,19 @@ def bli_mentions(session, pe_number, agency) -> list[tuple[str, str, str]]: ... 
 def propose_transitions(session, pe_number: str, agency: str, *, limit: int = 5) -> list[TransitionCandidate]: ...
 ```
 
+**Rule 0 — research budget activities never transition directly.** Digits 3–4 of a PE
+number encode its budget activity; `pe_number[2:4] in ("01", "02")` is basic or applied
+research (BA 1 and BA 2), which by appropriation law cannot buy production units. Expose
+`RESEARCH_BUDGET_ACTIVITIES = ("01", "02")` and `is_research_pe(pe_number) -> bool`, and
+have `propose_transitions` return `[]` for such PEs before running any strategy (T10c
+shows a caption naming the rule). **Added 2026-09-20 after Codex correctly stopped:** with
+the thresholds below, `Defense Research Sciences` matched `Base Defense Systems (BDS)`
+(WRatio 85.5, token_set_ratio 60.87) and `Tactical Technology` matched `Tactical Vehicles`
+(cosine 0.766). Short titles collide; the thresholds stay where they are because the
+identical-title positives need them, and the research rule is the honest exclusion. The
+eval docstring must say the four negatives are satisfied by this rule, so what the
+negatives test is the rule's coverage, not the matchers' precision.
+
 Strategies, each producing candidates keyed by `(bli, appropriation)`:
 
 1. **NARRATIVE** (0.95): each `bli_mentions` code that exists in `procurement_lines` for an
@@ -642,13 +655,15 @@ model needed for the first three):** exact-title FUZZY hit ranks first with conf
 ≥ 0.95; a `PEAccomplishment` citing `BLI 2280` yields a NARRATIVE candidate with the
 verbatim sentence and `source_file`; a basic-research PE with no similar title returns
 `[]`; two titles within 0.1 of each other mark the top candidate `ambiguous`; a
-"Classified Programs" PE returns `[]`. The SEMANTIC strategy is covered by the eval, not
+"Classified Programs" PE returns `[]`; a `0601…` PE whose title exactly equals a seeded P-1
+title still returns `[]` (the research rule precedes the strategies). The SEMANTIC strategy is covered by the eval, not
 by unit tests, so the suite stays model-free.
 
 **Definition of done:** the golden file holds exactly the twenty cases above with
 verbatim quotes on the five citation cases; `python analysis/transition_eval.py` exits 0
 and its docstring states the measured numbers; every candidate carries a strategy and a
 confidence, NARRATIVE candidates carry evidence text and source; ambiguity is flagged;
+`is_research_pe` is exported and BA 1/2 PEs return `[]`;
 `python analysis/linker_eval.py` still passes 11/11 (nothing under `matching/` changed);
 `python -m pytest -q` passes; no UI.
 
@@ -670,7 +685,9 @@ python -c "import sys, time; sys.path.insert(0,'.'); from storage.db import get_
 **Do:** `with st.expander("Did it transition to procurement? (inference)"):` a caption
 stating this is a lead generator with no key join between RDT&E and procurement; call
 `propose_transitions` (wrap in a `@st.cache_data(ttl=3600)` accessor keyed on PE and
-agency; it returns dataclasses, so convert to dicts inside the accessor); if empty,
+agency; it returns dataclasses, so convert to dicts inside the accessor); if `is_research_pe(pe)`,
+`st.caption("Basic and applied research (budget activities 1–2) cannot fund procurement, so no
+transition is inferred.")`; else if empty,
 `st.caption("No procurement line resembles this program's title, and no narrative cites
 a BLI.")`; otherwise a `st.dataframe` with columns Line item, Appropriation, BLI,
 Confidence (two decimals), Strategy, Ambiguous ("ambiguous" or ""), Evidence source, and
