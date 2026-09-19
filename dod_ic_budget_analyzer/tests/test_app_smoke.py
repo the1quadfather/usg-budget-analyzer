@@ -2,6 +2,7 @@
 
 from pathlib import Path
 
+import streamlit as st
 from streamlit.testing.v1 import AppTest
 
 
@@ -62,7 +63,7 @@ def test_program_finder_rerun_keeps_tab_content_mapped(monkeypatch) -> None:
 
     # Skip persistent demand logging in this deterministic UI test.
     app.session_state["_logged_query"] = "0601102A"
-    app.text_input[0].input("0601102A").run()
+    app.text_input(key="program_query").input("0601102A").run()
 
     assert not app.exception
     assert _main_tab_labels(app) == MAIN_TAB_LABELS
@@ -70,6 +71,37 @@ def test_program_finder_rerun_keeps_tab_content_mapped(monkeypatch) -> None:
     assert _profile_tab_labels(app) == PROFILE_TAB_LABELS
     assert app.session_state["profile_tab::0601102A::Army"] == "Plans & Work"
     assert any(metric.label == "Net current program" for metric in app.metric)
+
+
+def test_ask_the_corpus_renders_passages_without_a_key(monkeypatch) -> None:
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+    st.cache_resource.clear()
+    app_path = Path(__file__).parents[1] / "app.py"
+    app = AppTest.from_file(str(app_path), default_timeout=120)
+    app.query_params["tab"] = "finder"
+    app.run()
+
+    app.text_input(key="corpus_question").input(
+        "Skyborg autonomous aircraft vanguard program"
+    ).run()
+
+    assert not app.exception
+    passage_expander = next(
+        expander for expander in app.expander
+        if expander.label.startswith("Passages considered (")
+    )
+    assert any(
+        "0603032F" in markdown.value
+        for markdown in passage_expander.markdown
+    )
+    assert not any(
+        button.label == "Answer from R-2 narratives (AI)"
+        for button in app.button
+    )
+    assert _main_tab_labels(app) == MAIN_TAB_LABELS
+    assert app.session_state["main_tab"] == "Program Finder"
 
 
 def test_configured_demo_allowlist_fails_closed_for_anonymous_user(

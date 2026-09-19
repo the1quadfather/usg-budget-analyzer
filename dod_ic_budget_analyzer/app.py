@@ -16,6 +16,8 @@ external, slow-or-billable calls (USAspending.gov, AI) sit behind buttons
 labeled with their source.
 """
 
+import dataclasses
+import hashlib
 import os
 from pathlib import Path
 from urllib.parse import quote
@@ -38,7 +40,7 @@ from analysis.provenance import (
 )
 from analysis.trend_tracker import LINEAGE_CONFIDENCE_THRESHOLD, TrendTracker
 from analysis.text_render import escape_dollars
-from analysis import primer
+from analysis import narrative_qa, primer
 from analysis.user_identity import streamlit_user_id
 
 # --- Configuration & State Setup ---
@@ -232,6 +234,17 @@ def load_matching_models():
     )
 
 
+@st.cache_resource
+def load_corpus_search():
+    """Warm the shared embedding model before loading the passage index."""
+    try:
+        load_matching_models()
+        narrative_qa.retrieve("warm-up", k=1)
+        return True
+    except Exception as exc:
+        return type(exc).__name__
+
+
 def link_program_query(query: str) -> dict:
     """Avoid loading the transformer for exact or decisive lexical hits."""
     lexical_result = load_lexical_linker().link_query(query)
@@ -252,6 +265,25 @@ def get_enricher():
     except Exception:
         pass
     return None
+
+
+def _ai_disabled_caption() -> str:
+    """Explain how to enable AI using the existing availability status."""
+    from analysis import oss_enricher
+    _, missing = oss_enricher.status()
+    if missing == "package":
+        return (
+            "AI lookups are disabled — install the SDK with "
+            "`pip install google-genai` (into the Python that runs "
+            "streamlit), then restart the app."
+        )
+    return (
+        "AI lookups are off — no Gemini API key is configured for this "
+        "instance. To enable them, run the app with your own "
+        "GEMINI_API_KEY (an environment variable locally, or a Secret on "
+        "Streamlit Community Cloud) and restart it."
+    )
+
 
 def current_user_id() -> str:
     """
@@ -316,6 +348,32 @@ def render_ai_result(res, render_fn, empty_msg: str = "Nothing found.") -> None:
                    "Re-run below for a fresh look.")
     if res.search_suggestions_html:
         st.html(res.search_suggestions_html)
+
+
+def _finder_permalink(pe_number: str, agency: str) -> str:
+    return quote(
+        f"?tab=finder&pe={pe_number}&agency={agency}",
+        safe="?=&",
+    )
+
+
+def _render_cited_answer(payload: dict) -> None:
+    answer = narrative_qa.CitedAnswer.from_dict(payload)
+    if answer.refused:
+        st.info(f"No cited answer: {answer.reason}")
+        return
+    for text, citations in answer.sentences:
+        st.markdown(escape_dollars(text))
+        for citation in citations:
+            permalink = _finder_permalink(
+                citation.pe_number, citation.agency
+            )
+            st.caption(
+                f"[PE {citation.pe_number}]({permalink}) · "
+                f"FY{citation.fiscal_year} · {citation.source_file}"
+            )
+            with st.expander("Quoted text"):
+                st.write(escape_dollars(citation.quote))
 
 
 # --- Cached external lookups (USAspending.gov) ---
@@ -974,6 +1032,114 @@ with tab_trends:
 # ═══════════════════════════════ Program Finder ══════════════════════════════
 with tab_finder:
     st.header("Find a program")
+    with st.expander("Ask the justification books", expanded=False):
+        st.caption(
+            "Searches the R-2 narrative text locally (free). The AI answer "
+            "is optional and metered."
+        )
+        question = st.text_input(
+            "Question",
+            key="corpus_question",
+            placeholder=(
+                "e.g. what is the Army doing on launched effects?"
+            ),
+        )
+        if question.strip():
+            ready = load_corpus_search()
+            if ready is not True:
+                st.caption(
+                    f"Local passage search is unavailable ({ready})."
+                )
+            else:
+                with st.spinner("Searching narratives..."):
+                    passages = narrative_qa.retrieve(question, k=8)
+                if not passages:
+                    st.info("No narrative passages matched.")
+                else:
+                    with st.expander(
+                        f"Passages considered ({len(passages)})"
+                    ):
+                        for passage in passages:
+                            permalink = _finder_permalink(
+                                passage.pe_number, passage.agency
+                            )
+                            st.markdown(
+                                f"**[PE {passage.pe_number}]({permalink})** "
+                                f"[{passage.agency}] · FY{passage.fiscal_year} "
+                                f"· {passage.source_file} · score "
+                                f"{passage.score:.2f}"
+                            )
+                            st.write(escape_dollars(passage.text))
+
+                    corpus_enricher = get_enricher()
+                    if corpus_enricher is None:
+                        st.caption(_ai_disabled_caption())
+                    else:
+                        corpus_result = narrative_qa.answer(
+                            question,
+                            passages,
+                            user_id=current_user_id(),
+                            allow_fresh=False,
+                            enricher=corpus_enricher,
+                        )
+                        question_key = hashlib.sha256(
+                            question.encode("utf-8")
+                        ).hexdigest()[:12]
+                        if corpus_result.cold:
+                            st.caption(
+                                "No saved answer for this question yet."
+                            )
+                            if st.button(
+                                "Answer from R-2 narratives (AI)",
+                                key=f"corpus_answer::{question_key}",
+                            ):
+                                with st.spinner("Reading the passages..."):
+                                    corpus_result = narrative_qa.answer(
+                                        question,
+                                        passages,
+                                        user_id=current_user_id(),
+                                        allow_fresh=True,
+                                        enricher=corpus_enricher,
+                                    )
+                                render_ai_result(
+                                    dataclasses.replace(
+                                        corpus_result, grounded=True
+                                    ),
+                                    _render_cited_answer,
+                                    "No answer produced.",
+                                )
+                        else:
+                            render_ai_result(
+                                dataclasses.replace(
+                                    corpus_result, grounded=True
+                                ),
+                                _render_cited_answer,
+                                "No answer produced.",
+                            )
+                            if st.button(
+                                "Re-answer (AI)",
+                                key=f"corpus_reanswer::{question_key}",
+                            ):
+                                with st.spinner("Reading the passages..."):
+                                    fresh_answer = narrative_qa.answer(
+                                        question,
+                                        passages,
+                                        user_id=current_user_id(),
+                                        allow_fresh=True,
+                                        force=True,
+                                        enricher=corpus_enricher,
+                                    )
+                                if fresh_answer.blocked:
+                                    render_ai_result(
+                                        dataclasses.replace(
+                                            fresh_answer, grounded=True
+                                        ),
+                                        _render_cited_answer,
+                                        "No answer produced.",
+                                    )
+                                else:
+                                    st.rerun()
+
     linked_pe = st.query_params.get("pe", "")
     query = st.text_input(
         "Search — program name, quote from an article, or PE number",
@@ -1786,22 +1952,7 @@ with tab_finder:
             # --- In the News ---
             with sub_news:
                 if enricher is None:
-                    from analysis import oss_enricher
-                    _, missing = oss_enricher.status()
-                    if missing == "package":
-                        st.caption(
-                            "AI lookups are disabled — install the SDK with "
-                            "`pip install google-genai` (into the Python that "
-                            "runs streamlit), then restart the app."
-                        )
-                    else:
-                        st.caption(
-                            "AI lookups are off — no Gemini API key is "
-                            "configured for this instance. To enable them, "
-                            "run the app with your own GEMINI_API_KEY (an "
-                            "environment variable locally, or a Secret on "
-                            "Streamlit Community Cloud) and restart it."
-                        )
+                    st.caption(_ai_disabled_caption())
                 else:
                     uid = current_user_id()
 
