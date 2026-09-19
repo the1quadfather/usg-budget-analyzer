@@ -71,7 +71,7 @@ tab-reordering bug reached `main` — it passed the smoke test and nobody clicke
 | T14b Cited synthesis | shipped | `narrative_answer` task on the governed path, `validate_answer` enforces verbatim quotes, 6 governance checks (57/57); commit `3bb54cc` |
 | T14c Ask-the-corpus UI | shipped | "Ask the justification books" expander on Program Finder; key-less path verified by AppTest and browser; cold/warm AI paths verified live (one call, $0.0135, 2,491 thinking tokens); commit `f1088cb` |
 | T15a Structured-fact schema | shipped | `NarrativeFact` + `narrative_fact_hash()` in `storage/db.py`, compatibility test proves `create_all` adds the table to an existing DB; docs updated; commit `d15874f` |
-| T10, T15b | **open** | this document. Next: T15b (spec to be re-verified before hand-off); T10a is research, not a Codex task |
+| T10, T15b | **open** | this document. Next: T15b (spec re-verified 2026-09-19); T10a is research, not a Codex task |
 
 Database ground truth, queried 2026-09-09:
 
@@ -1823,19 +1823,180 @@ git status --short
 
 ### T15b — Batch extraction job
 
-**Files:** new `analysis/narrative_extract.py`.
-**Depends on:** T15a merged.
+**Files:** new `analysis/narrative_extract.py`, new `tests/test_narrative_extract.py`,
+`storage/db.py` (one new model, `NarrativeExtraction`), `analysis/oss_enricher.py` (new
+`GeminiEnricher.extract_facts()` method, `EXTRACTION_SCHEMA`, `PROMPT_VERSIONS` entry),
+`config.py` (one `AI_CACHE_TTL_DAYS` entry), `analysis/ai_budget_eval.py` (governance
+checks), `scripts/build_release.py` (`DATA_TABLES` gains `narrative_facts` and
+`narrative_extractions`), `data/processed/usg_budgets.db.gz` (rebuilt after the real
+run), `DATA_DICTIONARY.md`, `CODEX_HANDOFF.md` §1, `README.md` (one paragraph under
+`## Updating the data`). Do not touch `app.py` or `analysis/ai_budget.py`.
+**Depends on:** T15a merged (it is: commit `d15874f`).
+**Rewritten 2026-09-19** against the repo and against a measured live call. The first
+version said "mirror `ai_precompute.py`" and "re-running skips already-extracted
+narratives" without saying how, and its cost estimate ignored that thinking tokens were
+70% of the only real call made so far.
 
-**Do:** mirror `analysis/ai_precompute.py`: a resumable worklist over narratives, a dry
-run that prints the estimated cost **before** any call (input tokens × price, plus output
-at the output rate, plus `thoughts_token_count` billed at the output rate), and a
-`--limit N` flag. CLI: `python -m analysis.narrative_extract --dry-run | --run --limit 50`.
+**Verified facts (2026-09-19):**
 
-**Definition of done:** dry run makes zero API calls and prints the estimate; a real run
-of 50 narratives writes rows whose `sentence` is a verbatim substring at
-`[char_start:char_end]` of the source text (asserted in code); spend appears in
-`ai_spend`; re-running skips already-extracted narratives; the task is not in
-`GROUNDED_TASKS`.
+- Corpus: `pe_narratives` has 18,268 rows, 14,737 distinct texts, 31.0 M characters
+  (about 7.7 M input tokens at 4 characters per token). PE-level rows
+  (`project_number == ""`) alone: 4,988 distinct texts, 14.9 M characters (about 3.7 M
+  tokens). `pe_accomplishments` has 74,849 distinct texts, 37.5 M characters, and is
+  **out of scope** for this task (report it as the follow-up).
+- Measured cost anchor (T14c live check, gemini-3.6-flash): one call with 2,828 input,
+  555 output, and **2,491 thinking tokens** cost $0.0135; thinking was ~70% of it.
+  `analysis.ai_budget.token_cost(model, input_tokens, output_tokens, thought_tokens=…)`
+  already bills thinking at the output rate. Use it for the estimate; do not re-derive
+  prices.
+- `google-genai` 2.19.0 is installed. `types.GenerateContentConfig` accepts
+  `thinking_config=types.ThinkingConfig(thinking_budget=<int>)` and `max_output_tokens`.
+  Extraction is structured recall, not reasoning; cap thinking. If the API rejects
+  `thinking_budget` for this model, fall back to `thinking_level="low"` and say so in
+  the report; if it rejects both, stop and report.
+- The governed path (`GeminiEnricher._governed`) never caches an empty payload, and
+  `analysis.ai_budget --reset-runtime` clears `ai_cache` before every archive build.
+  **Therefore the AI cache cannot be the resumability record.** A narrative that yields
+  zero facts must still be marked done somewhere durable, or every rerun re-pays for it.
+  That is what the new `narrative_extractions` table is for.
+- `config.AI_MONTHLY_BUDGET_USD` is 25.0 and `budget_guard` refuses fresh calls at the
+  ceiling; `ai_precompute.run()` shows the pattern: check the guard once before starting,
+  pass `credits=len(work) + 1`, and stop on the first `blocked` result.
+- `narrative_facts` (T15a) is created by `create_all` on open, has 0 rows, and is not in
+  the archive; `scripts/build_release.py::DATA_TABLES` does not list it yet (adding it
+  before the archive is rebuilt would break the release script).
+
+**New model (`storage/db.py`, after `NarrativeFact`, same style):**
+
+```python
+class NarrativeExtraction(Base):
+    """One completed extraction call per narrative text, whether or not it yielded facts."""
+    __tablename__ = "narrative_extractions"
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    narrative_table: Mapped[str] = mapped_column(String(30))
+    narrative_id: Mapped[int] = mapped_column(Integer)
+    text_hash: Mapped[str] = mapped_column(String(64))       # sha256 of the source text
+    model: Mapped[str] = mapped_column(String(100))
+    prompt_version: Mapped[int] = mapped_column(Integer)
+    fact_count: Mapped[int] = mapped_column(Integer)
+    dropped_count: Mapped[int] = mapped_column(Integer)      # facts whose sentence was not verbatim
+    input_tokens: Mapped[int] = mapped_column(Integer)
+    output_tokens: Mapped[int] = mapped_column(Integer)
+    thought_tokens: Mapped[int] = mapped_column(Integer)
+    est_cost_usd: Mapped[float] = mapped_column(Float)
+    extracted_at: Mapped[datetime] = mapped_column(default=_utcnow)
+    __table_args__ = (UniqueConstraint("narrative_table", "narrative_id", "model", "prompt_version"),)
+```
+
+**Task:** `extract_facts`, `PROMPT_VERSIONS["extract_facts"] = 1`,
+`config.AI_CACHE_TTL_DAYS["extract_facts"] = 365`, not in `GROUNDED_TASKS`.
+
+`GeminiEnricher.extract_facts(narrative_table, narrative_id, text, *, user_id="extract",
+allow_fresh=True, credits=None)` (pattern `adjudicate`): `params = {"table":
+narrative_table, "id": narrative_id, "text": sha256(text)[:16]}`. Prompt: the model is
+given one narrative and must return facts of the four types in `storage.db.FACT_TYPES`,
+each with a `value` (normalised: organisation name for `contractor`, the receiving
+programme or organisation for `transition`, the event name for `test_event`, the place
+for `location`) and the **verbatim sentence** the fact came from; return an empty list
+when there are none; never invent. `EXTRACTION_SCHEMA`: `OBJECT{facts: ARRAY of
+OBJECT{fact_type: STRING, value: STRING, sentence: STRING}}`, `facts` required.
+`GenerateContentConfig(response_mime_type="application/json",
+response_schema=EXTRACTION_SCHEMA, temperature=0.0, max_output_tokens=1024,
+thinking_config=types.ThinkingConfig(thinking_budget=512))`. `call()` returns
+`({"facts": <the parsed list, unfiltered>}, _usage(resp))` — a dict, so it is non-empty
+and cacheable even when the list is empty. Verification of sentences happens in the
+batch job, not in the enricher, so the raw model output stays inspectable.
+
+**Batch job (`analysis/narrative_extract.py`), pure functions plus `main()`:**
+
+- `text_hash(text) -> str` (sha256 hex).
+- `locate_sentence(text, sentence) -> tuple[int, int] | None`: `text.find(sentence)`;
+  if `-1`, retry with both sides whitespace-normalised by mapping the match back to the
+  original offsets (or return `None` if you cannot map exactly). The returned span must
+  satisfy `text[start:end] == sentence_as_stored`. No fuzzy matching.
+- `verify_facts(raw_facts, text) -> tuple[list[dict], int]`: keeps facts whose
+  `fact_type` is in `FACT_TYPES`, whose `value` is non-empty after strip, and whose
+  sentence locates; returns `(kept, dropped_count)`; each kept fact carries
+  `char_start`, `char_end`, and the `sentence` exactly as it appears in `text`.
+- `build_worklist(session, *, limit, fiscal_year=None) -> list[dict]`: PE-level
+  narratives (`project_number == ""`) ordered `fiscal_year DESC, pe_number, agency, id`,
+  one per distinct `(pe_number, agency, text_hash)` keeping the first (latest book),
+  **excluding** any whose `(narrative_table, narrative_id)` or, more usefully, whose
+  `text_hash` already appears in `narrative_extractions` for the current model and
+  prompt version. Each item: `{"narrative_table": "pe_narratives", "narrative_id",
+  "pe_number", "agency", "fiscal_year", "text"}`.
+- `estimate_cost(work, model=config.GEMINI_MODEL) -> dict`: per item `input =
+  len(text) // 4 + 300` (prompt overhead), `output = 200`, `thought = 512` (the budget
+  cap, i.e. the worst case), summed through `token_cost`; returns
+  `{"items", "input_tokens", "output_tokens", "thought_tokens", "usd"}`. Print all five
+  and the assumptions on a dry run.
+- `write_results(session, item, kept, dropped, usage, cost) -> int`: inserts one
+  `NarrativeFact` per kept fact (skip any whose `narrative_fact_hash` already exists)
+  and one `NarrativeExtraction` row; commits; returns the number of facts inserted.
+- `run(limit, dry_run, fiscal_year) -> int`: build the worklist; print its size and the
+  estimate; on `--dry-run` stop there with **zero API calls and zero writes**. Otherwise
+  require `oss_enricher.available()`, check `budget_guard("extract_facts",
+  user_id="extract")` once, then loop: call `extract_facts`, `verify_facts`,
+  `write_results`; print one line per narrative (`fresh|cached`, facts kept, dropped,
+  running spend); stop on the first `blocked` result; finish by printing the totals and
+  `ai_budget.report()`.
+- CLI: `python -m analysis.narrative_extract --dry-run [--limit N] [--fiscal-year YYYY]`
+  and `python -m analysis.narrative_extract --run --limit N [--fiscal-year YYYY]`.
+  Default limit 50. `--run` without `--limit` refuses: "Pass --limit; the whole corpus
+  is about 3.7 M input tokens and would exceed the monthly ceiling."
+
+**Governance checks (`analysis/ai_budget_eval.py`, fake client, scratch DB):**
+`"extract_facts" not in config.GROUNDED_TASKS`; a fake response with one verbatim
+sentence and one non-verbatim sentence, driven through `run`-level helpers
+(`verify_facts` + `write_results` on the scratch session): one `NarrativeFact` row, one
+`NarrativeExtraction` row with `fact_count=1, dropped_count=1`; a second
+`build_worklist` on the same session excludes that narrative (zero calls); the ledger
+holds one `extract_facts` row with `thought_tokens` recorded; the shared table still has
+no grounded tasks.
+
+**Tests (`tests/test_narrative_extract.py`, pure, no key):** `locate_sentence` exact
+hit, whitespace-normalised hit mapped to exact offsets, miss -> `None`; `verify_facts`
+drops an unknown `fact_type`, an empty value, and an unlocatable sentence, keeps the
+rest with correct offsets; `estimate_cost` on two known texts equals the hand-computed
+`token_cost` sum; `build_worklist` on an in-memory session with two PE-level narratives
+sharing one text and one project-level narrative returns one item, and returns zero
+after a `NarrativeExtraction` row for that `text_hash` is inserted; `write_results` twice
+with the same facts inserts once.
+
+**Real run and archive (the part that spends money):** `--dry-run --limit 50` first and
+paste the estimate. Then `--run --limit 50`. Expected spend: the estimate's worst case
+is about 50 × (input ~800 + output 200 + thinking 512 tokens) ≈ **$0.06 to $0.10**; the
+actual figure prints from the ledger. Then, in this order: `python -m analysis.ai_budget
+--reset-runtime`, `python -m storage.build_archive`, update `DATA_DICTIONARY.md` (new
+`narrative_extractions` section, both tables' row counts, "15 tables", the new archive
+blob hash and commit in the header, and remove the "not yet in the archive" wording),
+`CODEX_HANDOFF.md` §1, and add both tables to `DATA_TABLES` in
+`scripts/build_release.py`. Commit message states `narrative_facts 0 -> N`,
+`narrative_extractions 0 -> 50`, and the spend.
+
+**Definition of done:** dry run makes zero API calls and prints the estimate with its
+assumptions; the real run of 50 writes facts whose `sentence` equals
+`text[char_start:char_end]` (asserted in `write_results` before insert); every call is
+in `ai_spend` with thinking tokens recorded; a second `--dry-run --limit 50` after the
+run lists 50 **different** narratives (the first 50 are skipped via
+`narrative_extractions`); the task is not grounded; `python analysis/ai_budget_eval.py`
+and `python -m pytest -q` pass; the archive is rebuilt and both docs and the release
+script reflect it; `python scripts/build_release.py --date 2099-01-01` succeeds against
+the new archive (then delete that bundle directory).
+
+**Verify:**
+```bash
+python -m pytest -q
+python analysis/ai_budget_eval.py
+python -m analysis.narrative_extract --dry-run --limit 50
+python -m analysis.narrative_extract --run --limit 50
+python -m analysis.narrative_extract --dry-run --limit 50        # different 50; zero already-done
+python -c "import sqlite3; c=sqlite3.connect('data/processed/usg_budgets.db'); print(c.execute('select count(*) from narrative_facts').fetchone()[0], c.execute('select count(*) from narrative_extractions').fetchone()[0], c.execute(\"select count(*) from ai_cache where task in ('find_open_source_hits','annual_signal')\").fetchone()[0])"
+python -m analysis.ai_budget --reset-runtime
+python -m storage.build_archive
+python scripts/build_release.py --date 2099-01-01 && python -c "import shutil; shutil.rmtree('../release/usg-budgets-2099-01-01')"
+git status --short
+```
 
 ---
 
