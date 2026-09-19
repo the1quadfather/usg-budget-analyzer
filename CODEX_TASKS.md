@@ -680,8 +680,26 @@ python -c "import sys, time; sys.path.insert(0,'.'); from storage.db import get_
 
 **Files:** `app.py` (Program Finder → Funding sub-tab, a new expander after the
 "Underlying funding table" expander and before the Plans & Work sub-tab begins),
-`tests/test_app_smoke.py` (one new test).
-**Depends on:** T10b merged.
+`analysis/provenance.py` (new `procurement_sources()` helper), `tests/test_regressions.py`
+(one test in `ProvenanceRegressionTests`), `tests/test_app_smoke.py` (one new test).
+**Depends on:** T10b merged (it is: commit `38ae87a`).
+**Amended 2026-09-19:** the first version said "plus the P-1 source documents" without
+naming a helper; none exists. Specify it:
+
+```python
+def procurement_sources(session, *, blis: Iterable[str] | None = None,
+                        appropriations: Iterable[str] | None = None) -> list[dict]: ...
+```
+
+Mirror `execution_sources`: join `SourceDocument` through `ProcurementLine.source_document_id`,
+filter `ProcurementLine.bli.in_(...)` and `ProcurementLine.appropriation.in_(...)` when given,
+`distinct()`, ordered by `publication_year, filename`, returning the same six-key dicts. On the
+shipped database with no filters it returns the 2 `P1` documents. Regression test: an in-memory
+session with one `P1` `SourceDocument` and one `ProcurementLine` yields one source whose
+`document_type == "P1"`, and `csv_with_provenance` on a one-row frame names its filename.
+In the panel, pass `include_deflator_source(fetch_funding_sources(...)) +
+procurement_sources(session, blis=[c.bli ...], appropriations=[c.appropriation ...])` to
+`render_table_downloads`.
 
 **Do:** `with st.expander("Did it transition to procurement? (inference)"):` a caption
 stating this is a lead generator with no key join between RDT&E and procurement; call
