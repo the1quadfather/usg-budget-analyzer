@@ -1,0 +1,255 @@
+[
+  {
+    "pe_number": "0604366N",
+    "agency": "Navy",
+    "program_name": "Standard Missile Improvements",
+    "label": "transition",
+    "acceptable": [
+      {"bli": "2356", "appropriation": "Weapons Procurement, Navy"},
+      {"bli": "2234", "appropriation": "Weapons Procurement, Navy"}
+    ],
+    "evidence_class": "bli_citation",
+    "evidence_quote": "Transition to Production (TTP) is typically funded either fully with procurement or a combination of RDTE and procurement, thus the corresponding split between WPN BLI 2356 supports the RDTE investment of TTP under PU 0439.",
+    "evidence_source": "navy_fy2027_RDTEN_BA5_Book.pdf",
+    "note": null
+  },
+  {
+    "pe_number": "0604258N",
+    "agency": "Navy",
+    "program_name": "Target Systems Development",
+    "label": "transition",
+    "acceptable": [
+      {"bli": "2280", "appropriation": "Weapons Procurement, Navy"}
+    ],
+    "evidence_class": "bli_citation",
+    "evidence_quote": "FY 2019 funds were reprogrammed to the Weapons Procurement, Navy (WPN) appropriation (BLI 2280).",
+    "evidence_source": "navy_fy2020_RDTEN_BA6_Book.pdf",
+    "note": null
+  },
+  {
+    "pe_number": "0603596N",
+    "agency": "Navy",
+    "program_name": "LCS Mission Modules",
+    "label": "transition",
+    "acceptable": [
+      {"bli": "1600", "appropriation": "Other Procurement, Navy"}
+    ],
+    "evidence_class": "bli_citation",
+    "evidence_quote": "COMPLETE FORMAL TESTING ON FREEDOM VARIANT: 1.) Complete DT-B3 Phase II, DT-C3 (TECHEVAL), and OT-C3 (IOT&E) to achieve ASW MP IOC 2.) Complete development of ASW MP logistics products INITIATE INTEGRATION OF ASW MP ON INDEPENDENCE VARIANT IN PREPARATION FOR FORMAL TESTING: 1.) Develop requirements for the Independence variant SHIPALT 2.) Complete the Ship Installation Drawings (SIDs) and Ship Change Documents (SCDs) 3.) Conduct ship checks 4.) Complete development of ASW MP SHIPALT for Independence variant in preparation for MP embark/debark 5.) Execute SHIPALT on LCS 4 to support formal testing 6.) Conduct Crew Training 7.) Embark and conduct Installation Check Out (INCO) procedures for the ASW MP onto LCS 4 8.) Finalize safety analysis of the ASW equipment on the Independence variant 9.) Conduct ASW MP Weapon System Explosives Safety Review Board (WSESRB) to support ASW MP certification Appropriation/Budget Activity R-1 Program Element (Number/Name) Project (Number/Name) 1319 / 4 PE 0603596N / (U)LCS Mission Modules 2551 / Anti-Submarine Warfare (ASW) Mission Package FY 2018 FY 2019 Base OCO Total 10.) Finalize testing objectives, performance prediction modeling, and test plans to support ASW MP testing 11.) Conduct at-sea end-to-end integration testing on Independence variant hull to include ASW MP and combat system performance validation testing 12.) Prepare for formal developmental and operational testing beginning in FY 2021 Due to FY 2019 Budget Enactment for Common and ASW MP procurement funds (BLI 1600 and BLI 1602), program has moved from fielding ACB-19 / TI-18 to ACB-19 / TI-20 to allow the program to procure and field a common sonar signal processing baseline across the eight ASW division ships.",
+    "evidence_source": "navy_fy2020_RDTEN_BA4_Book.pdf",
+    "note": null
+  },
+  {
+    "pe_number": "0604777N",
+    "agency": "Navy",
+    "program_name": "Navigation/ID System",
+    "label": "transition",
+    "acceptable": [
+      {"bli": "0840", "appropriation": "Other Procurement, Navy"}
+    ],
+    "evidence_class": "bli_citation",
+    "evidence_quote": "The $15.153M increase is to fund recurring development ($0.149M) of improved inboard hardware and software systems and to realign ($15.004M) to RDT&E a portion of longstanding NRE efforts funded in OPN BLI 0840.",
+    "evidence_source": "navy_fy2020_RDTEN_BA5_Book.pdf",
+    "note": "NRE was realigned from OPN BLI 0840 to RDT&E."
+  },
+  {
+    "pe_number": "0603563N",
+    "agency": "Navy",
+    "program_name": "Ship Concept Advanced Design",
+    "label": "transition",
+    "acceptable": [
+      {"bli": "1445", "appropriation": "Other Procurement, Navy"}
+    ],
+    "evidence_class": "bli_citation",
+    "evidence_quote": "Appropriation/Budget Activity R-1 Program Element (Number/Name) Project (Number/Name) 1319 / 4 PE 0603563N / Ship Concept Advanced De 3161 / NAVSEA Tech Authority sign FY 2023 FY 2024 Base OCO Total Beginning in FY 2025 as a function of the Rapid Sustainment Improvement Process (RSIP), the Condition Based Maintenance (CBM+) system will be developed, tested, evaluated, and then installed (using BLI 1445) on three to five surface combatants for selected shipboard equipment.",
+    "evidence_source": "navy_fy2025_RDTEN_BA4_Book.pdf",
+    "note": "Installation is funded from OPN BLI 1445."
+  },
+  {
+    "pe_number": "0207146F",
+    "agency": "Air Force",
+    "program_name": "F-15EX",
+    "label": "transition",
+    "acceptable": [
+      {"bli": "F015EX", "appropriation": "Aircraft Procurement, Air Force"}
+    ],
+    "evidence_class": "same_title",
+    "evidence_quote": null,
+    "evidence_source": null,
+    "note": null
+  },
+  {
+    "pe_number": "0207147F",
+    "agency": "Air Force",
+    "program_name": "Collaborative Combat Aircraft",
+    "label": "transition",
+    "acceptable": [
+      {"bli": "CCA000", "appropriation": "Aircraft Procurement, Air Force"}
+    ],
+    "evidence_class": "same_title",
+    "evidence_quote": null,
+    "evidence_source": null,
+    "note": null
+  },
+  {
+    "pe_number": "0207253F",
+    "agency": "Air Force",
+    "program_name": "Compass Call",
+    "label": "transition",
+    "acceptable": [
+      {"bli": "CALL00", "appropriation": "Aircraft Procurement, Air Force"}
+    ],
+    "evidence_class": "same_title",
+    "evidence_quote": null,
+    "evidence_source": null,
+    "note": null
+  },
+  {
+    "pe_number": "0204202N",
+    "agency": "Navy",
+    "program_name": "DDG-1000",
+    "label": "transition",
+    "acceptable": [
+      {"bli": "2119", "appropriation": "Shipbuilding and Conversion, Navy"}
+    ],
+    "evidence_class": "same_title",
+    "evidence_quote": null,
+    "evidence_source": null,
+    "note": null
+  },
+  {
+    "pe_number": "0210609A",
+    "agency": "Army",
+    "program_name": "Paladin Integrated Management (PIM)",
+    "label": "transition",
+    "acceptable": [
+      {"bli": "2073GZ0410", "appropriation": "Procurement of Weapons and Tracked Combat Vehicles, Army"}
+    ],
+    "evidence_class": "same_title",
+    "evidence_quote": null,
+    "evidence_source": null,
+    "note": null
+  },
+  {
+    "pe_number": "0604274N",
+    "agency": "Navy",
+    "program_name": "Next Generation Jammer (NGJ)",
+    "label": "transition",
+    "acceptable": [
+      {"bli": "0591", "appropriation": "Aircraft Procurement, Navy"}
+    ],
+    "evidence_class": "same_title",
+    "evidence_quote": null,
+    "evidence_source": null,
+    "note": null
+  },
+  {
+    "pe_number": "0605028A",
+    "agency": "Army",
+    "program_name": "Armored Multi-Purpose Vehicle (AMPV)",
+    "label": "transition",
+    "acceptable": [
+      {"bli": "2944G80819", "appropriation": "Procurement of Weapons and Tracked Combat Vehicles, Army"}
+    ],
+    "evidence_class": "same_title",
+    "evidence_quote": null,
+    "evidence_source": null,
+    "note": null
+  },
+  {
+    "pe_number": "0605231A",
+    "agency": "Army",
+    "program_name": "Precision Strike Missile (PrSM)",
+    "label": "transition",
+    "acceptable": [
+      {"bli": "8540C29600", "appropriation": "Missile Procurement, Army"}
+    ],
+    "evidence_class": "same_title",
+    "evidence_quote": null,
+    "evidence_source": null,
+    "note": null
+  },
+  {
+    "pe_number": "0605230F",
+    "agency": "Air Force",
+    "program_name": "Ground Based Strategic Deterrent",
+    "label": "transition",
+    "acceptable": [
+      {"bli": "MGBSD0", "appropriation": "Missile Procurement, Air Force"}
+    ],
+    "evidence_class": "same_title",
+    "evidence_quote": null,
+    "evidence_source": null,
+    "note": null
+  },
+  {
+    "pe_number": "1203265SF",
+    "agency": "Space Force",
+    "program_name": "GPS III Space Segment",
+    "label": "transition",
+    "acceptable": [
+      {"bli": "GPSIII", "appropriation": "Procurement, Space Force"}
+    ],
+    "evidence_class": "same_title",
+    "evidence_quote": null,
+    "evidence_source": null,
+    "note": null
+  },
+  {
+    "pe_number": "0604618F",
+    "agency": "Air Force",
+    "program_name": "Joint Direct Attack Munition",
+    "label": "transition",
+    "acceptable": [
+      {"bli": "353620", "appropriation": "Procurement of Ammunition, Air Force"}
+    ],
+    "evidence_class": "same_title",
+    "evidence_quote": null,
+    "evidence_source": null,
+    "note": null
+  },
+  {
+    "pe_number": "0601102A",
+    "agency": "Army",
+    "program_name": "Defense Research Sciences",
+    "label": "no_transition",
+    "acceptable": [],
+    "evidence_class": "basic_research",
+    "evidence_quote": null,
+    "evidence_source": null,
+    "note": null
+  },
+  {
+    "pe_number": "0601103A",
+    "agency": "Army",
+    "program_name": "University Research Initiatives",
+    "label": "no_transition",
+    "acceptable": [],
+    "evidence_class": "basic_research",
+    "evidence_quote": null,
+    "evidence_source": null,
+    "note": null
+  },
+  {
+    "pe_number": "0602702E",
+    "agency": "Defense-Wide",
+    "program_name": "Tactical Technology",
+    "label": "no_transition",
+    "acceptable": [],
+    "evidence_class": "basic_research",
+    "evidence_quote": null,
+    "evidence_source": null,
+    "note": null
+  },
+  {
+    "pe_number": "0601153N",
+    "agency": "Navy",
+    "program_name": "Defense Research Sciences",
+    "label": "no_transition",
+    "acceptable": [],
+    "evidence_class": "basic_research",
+    "evidence_quote": null,
+    "evidence_source": null,
+    "note": null
+  }
+]
