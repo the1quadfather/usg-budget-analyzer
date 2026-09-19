@@ -69,7 +69,8 @@ tab-reordering bug reached `main` — it passed the smoke test and nobody clicke
 | T12b Release bundle script | shipped | `scripts/build_release.py` verifies the tracked archive and writes `release/usg-budgets-<date>/` (35 files, manifest matches the dictionary); commit `9fa7f1f` |
 | T14a Local retrieval over narratives | shipped | `analysis/narrative_qa.py`, tracked 26,702-passage index (51 MB with text), eval 5/5 gated at ~14 ms/query; commit `bbfec92` |
 | T14b Cited synthesis | shipped | `narrative_answer` task on the governed path, `validate_answer` enforces verbatim quotes, 6 governance checks (57/57); commit `3bb54cc` |
-| T10, T14c–T15 | **open** | this document. Next: T14c (spec re-verified 2026-09-18); T10a is research, not a Codex task |
+| T14c Ask-the-corpus UI | shipped | "Ask the justification books" expander on Program Finder; key-less path verified by AppTest and browser; cold/warm AI paths verified live (one call, $0.0135, 2,491 thinking tokens); commit `f1088cb` |
+| T10, T15 | **open** | this document. Next: T15a (spec to be re-verified before hand-off); T10a is research, not a Codex task |
 
 Database ground truth, queried 2026-09-09:
 
