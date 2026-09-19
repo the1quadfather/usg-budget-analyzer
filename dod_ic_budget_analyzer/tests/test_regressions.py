@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 APP_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(APP_DIR))
 
+import config
 from analysis.ai_budget import LedgerUnavailable, SpendLedger, budget_guard
 from analysis.gap_analyzer import GapAnalyzer
 from analysis.deflators import apply_deflator, convert_amount
@@ -29,8 +30,9 @@ from analysis.user_identity import streamlit_user_id
 from acquisition.dd1416_downloader import metadata_from_url
 from parsing.dd1416_parser import DD1416ParseError, parse_workbook
 from storage.db import (
-    Base, FundingLine, PEExecution, ProcurementLine, ProgramElement,
-    SourceDocument, _ensure_schema_compatibility,
+    Base, FACT_TYPES, FundingLine, NarrativeFact, PEExecution, PENarrative,
+    ProcurementLine, ProgramElement, SourceDocument,
+    _ensure_schema_compatibility, get_engine, narrative_fact_hash,
 )
 from storage.ingest_r1 import R1Ingestor
 from storage.build_archive import build_archive
@@ -283,6 +285,123 @@ class ProcurementSchemaRegressionTests(unittest.TestCase):
                 session.commit()
             session.rollback()
         engine.dispose()
+
+
+class NarrativeFactSchemaRegressionTests(unittest.TestCase):
+    def setUp(self):
+        self.engine = create_engine("sqlite:///:memory:")
+        Base.metadata.create_all(self.engine)
+        self.session = Session(self.engine)
+        self.description = (
+            "The program hired Lockheed Martin. Testing follows next year."
+        )
+        self.sentence = "The program hired Lockheed Martin."
+        self.narrative = PENarrative(
+            pe_number="0600001A",
+            agency="Army",
+            fiscal_year=2027,
+            project_number="001",
+            project_title="Example project",
+            description=self.description,
+            source_file="army_fy2027_example.pdf",
+        )
+        self.session.add(self.narrative)
+        self.session.flush()
+
+    def tearDown(self):
+        self.session.close()
+        self.engine.dispose()
+
+    def _fact(self) -> NarrativeFact:
+        char_start = self.description.index(self.sentence)
+        char_end = char_start + len(self.sentence)
+        return NarrativeFact(
+            narrative_table="pe_narratives",
+            narrative_id=self.narrative.id,
+            pe_number=self.narrative.pe_number,
+            agency=self.narrative.agency,
+            fiscal_year=self.narrative.fiscal_year,
+            fact_type="contractor",
+            value="Lockheed Martin",
+            sentence=self.sentence,
+            char_start=char_start,
+            char_end=char_end,
+            model=config.GEMINI_MODEL,
+            content_hash=narrative_fact_hash(
+                "pe_narratives",
+                self.narrative.id,
+                "contractor",
+                "Lockheed Martin",
+                char_start,
+                char_end,
+            ),
+        )
+
+    def test_compatibility_creates_table_on_existing_database(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "existing.db"
+            engine = create_engine(f"sqlite:///{path.as_posix()}")
+            Base.metadata.create_all(
+                engine,
+                tables=[
+                    table for table in Base.metadata.sorted_tables
+                    if table.name != "narrative_facts"
+                ],
+            )
+            self.assertFalse(inspect(engine).has_table("narrative_facts"))
+            engine.dispose()
+
+            compatible = get_engine(f"sqlite:///{path.as_posix()}")
+            try:
+                self.assertTrue(
+                    inspect(compatible).has_table("narrative_facts")
+                )
+            finally:
+                compatible.dispose()
+
+    def test_fact_round_trip_preserves_source_offsets(self):
+        fact = self._fact()
+        self.session.add(fact)
+        self.session.commit()
+        self.session.expire_all()
+
+        stored = self.session.scalar(select(NarrativeFact))
+        self.assertIsNotNone(stored)
+        self.assertIsInstance(stored.id, int)
+        self.assertEqual(stored.narrative_table, "pe_narratives")
+        self.assertEqual(stored.narrative_id, self.narrative.id)
+        self.assertEqual(stored.pe_number, "0600001A")
+        self.assertEqual(stored.agency, "Army")
+        self.assertEqual(stored.fiscal_year, 2027)
+        self.assertEqual(stored.fact_type, "contractor")
+        self.assertEqual(stored.value, "Lockheed Martin")
+        self.assertEqual(stored.sentence, self.sentence)
+        self.assertEqual(stored.char_start, 0)
+        self.assertEqual(stored.char_end, len(self.sentence))
+        self.assertEqual(stored.model, config.GEMINI_MODEL)
+        self.assertEqual(stored.content_hash, fact.content_hash)
+        self.assertIsNotNone(stored.extracted_at)
+        self.assertEqual(
+            self.description[stored.char_start:stored.char_end],
+            stored.sentence,
+        )
+
+    def test_duplicate_content_hash_is_rejected(self):
+        first = self._fact()
+        self.session.add(first)
+        self.session.commit()
+
+        duplicate = self._fact()
+        self.session.add(duplicate)
+        with self.assertRaises(IntegrityError):
+            self.session.commit()
+        self.session.rollback()
+
+    def test_fact_types_are_exact(self):
+        self.assertEqual(
+            set(FACT_TYPES),
+            {"contractor", "transition", "test_event", "location"},
+        )
 
 
 class IngestionRegressionTests(unittest.TestCase):

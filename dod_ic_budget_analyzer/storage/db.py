@@ -6,15 +6,16 @@ DoD/IC Budget Analyzer.
 """
 
 import gzip
+import hashlib
 import logging
 import os
 import shutil
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Literal, Optional
 
-from sqlalchemy import Float, ForeignKey, Integer, String, Text, create_engine, inspect, text
+from sqlalchemy import Float, ForeignKey, Index, Integer, String, Text, create_engine, inspect, text
 from sqlalchemy import UniqueConstraint
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import (
@@ -203,6 +204,56 @@ class PELineage(Base):
     method: Mapped[str] = mapped_column(String(50))
     content_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     ingested_at: Mapped[datetime] = mapped_column(default=_utcnow)
+
+
+FactType = Literal["contractor", "transition", "test_event", "location"]
+FACT_TYPES: tuple[str, ...] = (
+    "contractor", "transition", "test_event", "location"
+)
+
+
+class NarrativeFact(Base):
+    """One structured fact extracted from a narrative sentence (T15b fills it)."""
+
+    __tablename__ = "narrative_facts"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    narrative_table: Mapped[str] = mapped_column(String(30))
+    # "pe_narratives" | "pe_accomplishments"
+    narrative_id: Mapped[int] = mapped_column(Integer)  # that table's id; no FK
+    pe_number: Mapped[str] = mapped_column(String(50), index=True)
+    agency: Mapped[str] = mapped_column(String(100))
+    fiscal_year: Mapped[int] = mapped_column(Integer)
+    fact_type: Mapped[str] = mapped_column(String(20))  # one of FACT_TYPES
+    value: Mapped[str] = mapped_column(String(500))  # normalised value
+    sentence: Mapped[str] = mapped_column(Text)  # verbatim source sentence
+    char_start: Mapped[int] = mapped_column(Integer)  # source text offset
+    char_end: Mapped[int] = mapped_column(Integer)
+    model: Mapped[str] = mapped_column(String(100))  # config.GEMINI_MODEL
+    content_hash: Mapped[str] = mapped_column(
+        String(64), unique=True, index=True
+    )
+    extracted_at: Mapped[datetime] = mapped_column(default=_utcnow)
+
+    __table_args__ = (
+        Index(
+            "ix_narrative_facts_source", "narrative_table", "narrative_id"
+        ),
+    )
+
+
+def narrative_fact_hash(narrative_table: str, narrative_id: int, fact_type: str,
+                        value: str, char_start: int, char_end: int) -> str:
+    """sha256 over the tab-joined identity fields; the idempotency key for T15b."""
+    identity = "\t".join([
+        narrative_table,
+        str(narrative_id),
+        fact_type,
+        value,
+        str(char_start),
+        str(char_end),
+    ])
+    return hashlib.sha256(identity.encode("utf-8")).hexdigest()
 
 
 class PENarrative(Base):

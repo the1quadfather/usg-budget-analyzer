@@ -6,7 +6,7 @@ This document describes the SQLite database shipped with the repository at
 (`codex/t11e` when inspected). The archive blob is
 `f2aa7a54e64453e05351a4a8f928d961a85295ce`; it was last rebuilt in commit
 `b1a3885e4bec042db6ad5709c6f862844fc5bdd8`. The archive contains 13 tables and 43
-indexes.
+indexes. A freshly opened database also creates the empty `narrative_facts` table (14).
 
 The nine data tables below ship with records. Four additional runtime table schemas ship
 empty and are documented separately under [Runtime tables, not shipped](#runtime-tables-not-shipped).
@@ -27,6 +27,7 @@ database. Runtime activity can add rows to a working database after it is expand
 | `pe_narratives` | 18,268 | R-2 justification books in XML and PDF |
 | `pe_accomplishments` | 101,219 | R-2 accomplishment and planned-program line items |
 | `pe_lineage` | 405 | Derived from R-1 funding and R-2 narratives |
+| `narrative_facts` | 0 (not yet in the archive) | Derived by T15b extraction |
 | `ai_cache` | 0 | Runtime only; reset before every archive build |
 | `ai_spend` | 0 | Runtime only; reset before every archive build |
 | `ai_user_history` | 0 | Runtime only; reset before every archive build |
@@ -303,6 +304,29 @@ derived table, not a source exhibit: `analysis/lineage.py` derives it from
 | `method` | `VARCHAR(50)` | No | `narrative` or `ba_renumber` |
 | `content_hash` | `VARCHAR(64)` | No | Stable edge-content identity hash |
 | `ingested_at` | `DATETIME` | No | UTC ingestion timestamp |
+
+## `narrative_facts`
+
+Structured facts extracted from narrative sentences. `Base.metadata.create_all` creates
+this empty table the first time the database is opened; it has 0 rows and is absent from
+the tracked archive until T15b populates it and rebuilds the archive.
+
+| Column | SQL type | Nullable | Unit or meaning |
+|---|---|:---:|---|
+| `id` | `INTEGER` | No | Primary-key row identifier |
+| `narrative_table` | `VARCHAR(30)` | No | Source table: `pe_narratives` or `pe_accomplishments` |
+| `narrative_id` | `INTEGER` | No | Row identifier in `narrative_table`; deliberately not a foreign key |
+| `pe_number` | `VARCHAR(50)` | No | Program Element identifier |
+| `agency` | `VARCHAR(100)` | No | DoD component or agency |
+| `fiscal_year` | `INTEGER` | No | Fiscal year/PB context of the source narrative |
+| `fact_type` | `VARCHAR(20)` | No | `contractor`, `transition`, `test_event`, or `location` |
+| `value` | `VARCHAR(500)` | No | Normalised extracted value |
+| `sentence` | `TEXT` | No | Verbatim sentence from the source narrative |
+| `char_start` | `INTEGER` | No | Start offset of `sentence` in the source text |
+| `char_end` | `INTEGER` | No | Exclusive end offset of `sentence` in the source text |
+| `model` | `VARCHAR(100)` | No | Extraction model identifier |
+| `content_hash` | `VARCHAR(64)` | No | Unique tab-joined identity hash for idempotency |
+| `extracted_at` | `DATETIME` | No | UTC extraction timestamp |
 
 ## Derived tables
 
