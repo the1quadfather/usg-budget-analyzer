@@ -5,8 +5,8 @@ This document describes the SQLite database shipped with the repository at
 2026-09-18 at repository commit `f23ad7fdaf8886c4fd1d0ded96486ff54b609ccc`
 (`codex/t15b` when inspected). The archive blob is
 `8b89d3096547eba7d8b40455909e8012146f9c15`; it was last rebuilt in commit
-`f23ad7fdaf8886c4fd1d0ded96486ff54b609ccc`. The archive contains 15 tables and 48
-indexes.
+`f23ad7fdaf8886c4fd1d0ded96486ff54b609ccc`. The archive contains 15 tables and 46
+named indexes (SQLite autoindexes for unique constraints excluded, as before).
 
 The eleven data tables below ship with records. Four additional runtime table schemas ship
 empty and are documented separately under [Runtime tables, not shipped](#runtime-tables-not-shipped).

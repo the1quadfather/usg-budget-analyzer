@@ -71,7 +71,8 @@ tab-reordering bug reached `main` — it passed the smoke test and nobody clicke
 | T14b Cited synthesis | shipped | `narrative_answer` task on the governed path, `validate_answer` enforces verbatim quotes, 6 governance checks (57/57); commit `3bb54cc` |
 | T14c Ask-the-corpus UI | shipped | "Ask the justification books" expander on Program Finder; key-less path verified by AppTest and browser; cold/warm AI paths verified live (one call, $0.0135, 2,491 thinking tokens); commit `f1088cb` |
 | T15a Structured-fact schema | shipped | `NarrativeFact` + `narrative_fact_hash()` in `storage/db.py`, compatibility test proves `create_all` adds the table to an existing DB; docs updated; commit `d15874f` |
-| T10, T15b | **open** | this document. Next: T15b (spec re-verified 2026-09-19); T10a is research, not a Codex task |
+| T15b Batch extraction job | shipped | `analysis/narrative_extract.py` + `narrative_extractions` ledger; 50 narratives -> 25 verbatim-verified facts for $0.0396 (thinking capped); archive 15 tables; commits `f23ad7f` + `5f32ac6`, merged as a merge commit after a failed fast-forward |
+| T10 | **open** | T10a is research, not a Codex task. Roadmap tasks T8–T15 are complete. |
 
 Database ground truth, queried 2026-09-09:
 
