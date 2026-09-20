@@ -76,7 +76,7 @@ tab-reordering bug reached `main` — it passed the smoke test and nobody clicke
 | T10c Transition panel | shipped | "Did it transition to procurement? (inference)" on Program Finder → Funding, `procurement_sources()` provenance; AppTest covers F-15EX, a research PE, and an empty case; browser-verified; commit `b3d69ba` |
 | T14d Thinking budget for cited answers | shipped | shared `_generate_with_thinking` helper; `narrative_answer` capped at 1,024 thinking / 2,048 output; live check 464 thinking tokens, $0.0057 vs $0.0135 baseline, 4 cited sentences; commit `1cbd764` |
 | T15c Verified facts panel | shipped | "Verified facts (N) … (inference)" on Plans & Work with honest coverage (50 of 4,988), Data Coverage caption, three-state AppTest; browser-verified; commit `149c314` |
-| (none) | — | **All roadmap tasks and follow-ups T14d, T15c are shipped as of 2026-09-20.** Remaining ideas: extend extraction to `pe_accomplishments` (T15b note), fix the T11b detector false positive (T11c note), register R-2 books in `source_documents` (T11c note). |
+| T16a | **open** | Vocabulary, density, and theme pass (Phase H, spec written 2026-09-20). T16b (multipage restructure) to be specced after T16a ships. |
 
 Database ground truth, queried 2026-09-09:
 
@@ -2335,6 +2335,198 @@ Coverage tab, with the Program Finder tab staying selected across the reruns.
 python -m pytest -q
 python -c "import sys; sys.path.insert(0,'.'); import sqlite3, config; c=sqlite3.connect(str(config.PROCESSED_DIR/'usg_budgets.db')); print(c.execute('select count(*) from narrative_facts').fetchone()[0], c.execute('select count(*) from narrative_extractions').fetchone()[0], c.execute(\"select count(distinct description) from pe_narratives where project_number=''\").fetchone()[0])"   # 25 50 4988
 python -m streamlit run app.py --server.port 8501     # click through as described
+```
+
+---
+
+## Phase H — Product polish
+
+### T16a — Vocabulary, density, and theme pass
+
+**Files:** `app.py` (labels, captions, one badge helper, CSS additions, title),
+`tests/test_app_smoke.py` (label constants and assertions listed below), root
+`.streamlit/config.toml` (a `[theme]` section), `README.md` (the "What it does" table
+rows use the new tab names). **Not** `analysis/primer.py` (bodies stay; only the titles
+in `app.py` change), not `AGENTS.md`, not any `st.tabs()` key, query-parameter value,
+session-state key, or tab **order**. Labels change; mechanics do not.
+**Depends on:** T15c merged (it is: commit `149c314`).
+**Written 2026-09-20** from a full inventory of `app.py` (2,930 lines; 4 tabs + 4
+sub-tabs; 28 section titles; 6 primer titles; 10 buttons; 46 captions; 18 info boxes).
+
+**Why:** the app reads as a notebook. Section titles are questions or sentences,
+qualifiers like "(AI)" and "(inference)" sit inside titles, and about 500 words of
+captions plus 1,350 words of primers compete with the data. This task changes words and
+density only. Structure (tabs within tabs) is T16b.
+
+**Rules the whole task follows:**
+
+1. **Titles are noun phrases**, two to four words, no question marks, no parentheses,
+   no arrows. Counts stay in the title (`Projects (3)`).
+2. **Qualifiers become badges.** Add `render_badge(text: str)` in `app.py`: one
+   `st.markdown(f'<span class="badge">{text}</span>', unsafe_allow_html=True)` styled by
+   a `.badge` rule added to the existing `<style>` block (inline-block, 0.72rem,
+   uppercase, letter-spacing 0.04em, 2px 8px padding, 999px radius, background
+   `var(--secondary-background-color)`, 1px border `rgba(0,0,0,0.12)`). Badge texts used:
+   `Inference`, `AI estimate`, `AI-extracted`, `Live query` (four uses). A badge renders on
+   the line directly under the section title, never inside it. The honesty content is
+   unchanged; only its placement.
+3. **Captions are one sentence, at most 20 words.** Anything longer either becomes the
+   first sentence plus a `help=` tooltip, or moves into the nearest primer body, per the
+   table below. Primers keep their bodies.
+4. **Buttons name their source without parentheses.** This keeps the repo rule that a
+   billable or external call is behind a button naming its source.
+5. Permalinks, `st.tabs` keys (`trends`, `finder`, `rhetoric`, `coverage`; `funding`,
+   `plans`, `awards`, `news`), state keys, and tab order are untouched. Only the label
+   strings in `tab_definitions` and `profile_definitions` change.
+
+**Tab labels** (`tab_definitions` at `app.py` ~L835, `profile_definitions` ~L1336):
+
+| Key | Before | After |
+|---|---|---|
+| trends | Budget Trends | Trends |
+| finder | Program Finder | Programs |
+| rhetoric | Rhetoric vs. Budget | Rhetoric vs. Budget (unchanged) |
+| coverage | Data Coverage | Coverage |
+| funding | Funding | Funding (unchanged) |
+| plans | Plans & Work | Justification |
+| awards | Contracts & Awards | Awards |
+| news | In the News | News |
+
+**Section titles** (line numbers as of `149c314`; match by text, not line):
+
+| Line | Before | After | Badge under it |
+|---|---|---|---|
+| 811 | `st.title("🇺🇸 DoD Budget Explorer")` | `st.title("DoD Budget Explorer")` + `st.caption("Official DoD budget data, FY1996–FY2027.")` | — |
+| 866 | RDT&E topline by component | RDT&E topline by component | — |
+| 952 | Who got paid — account-level obligations | Obligations by recipient | Live query |
+| 999 | What changed | Changes between submissions | — |
+| 1088 | Find a program (header) | remove the header; the search box is the section | — |
+| 1089 | Ask the justification books | Ask the justification books | — |
+| 1113 | Passages considered (n) | Passages (n) | — |
+| 1619 | Lineage evidence: A → B (relation, FYyyyy) | Evidence: A → B | — |
+| 1675 | Underlying funding table | Funding table | — |
+| 1696 | Did it transition to procurement? (inference) | Procurement transition | Inference |
+| 1776 | Execution: request to net current program | Execution | — |
+| 1834 | Execution data table | Execution table | — |
+| 1880 | Program mission description (PBxxxx) | Mission description (PBxxxx) | — |
+| 1888 | Projects under this program (n) | Projects (n) | — |
+| 1955 | Verified facts (n) — extracted from the justification text (inference) | Extracted facts (n) | AI-extracted |
+| 2286 | What Congress authorized | Authorization | — |
+| 2410 | Line-by-line committee actions | Committee actions | — |
+| 2468 | Request → authorization → execution | Funding chain | — |
+| 2567 | Open-source emphasis (AI) | Public emphasis | AI estimate |
+| 2814 | What this tool covers | Coverage | — |
+| 2898 | Does it tie? | Reconciliation | — |
+
+Unchanged: `Quoted text`, `Source documents`, `Data table`, the change-feed kind
+expanders, `Evidence: {bli}`, `Source sentences`, `Rhetoric vs. budget`, `Methodology &
+caveats`.
+
+**Primer titles** (`render_primer(...)` calls):
+
+| Before | After |
+|---|---|
+| How to read this program's funding | Reading this chart |
+| What each step means, and why the numbers differ | About execution figures |
+| Why awards never tie to the budget figures | About award data |
+| Authorization versus appropriation | Authorization versus appropriation |
+| What each stage means | About the funding chain |
+| How the numbers relate: program elements, projects, request, authorization, appropriation, execution, and awards | How the numbers relate |
+
+**Buttons:**
+
+| Before | After |
+|---|---|
+| Look up obligations (USAspending.gov) | Load USAspending obligations |
+| Answer from R-2 narratives (AI) | Answer with AI |
+| Re-answer (AI) | Regenerate with AI |
+| Resolve ambiguous match (AI) | Resolve with AI |
+| Search awards (USAspending.gov) | Search USAspending awards |
+| Search subawards (umbrella vehicles) | Search USAspending subawards |
+| Search recent coverage (AI + Google Search) | Search the web with AI |
+| Refresh coverage (AI + Google Search) | Refresh web search |
+
+`Sign in` / `Sign out` unchanged. Where a button's old label carried information the new
+one drops (subawards = umbrella vehicles; web search = Google Search, results are
+per-user), that sentence becomes the caption directly under the button, within the
+20-word rule.
+
+**Captions and info boxes over 20 words** (word counts from the inventory):
+
+| Line | Words | Action |
+|---|---|---|
+| 923, 1583 | 23, 25 | Keep "Each year shows its most reliable figure." Move the precedence rule into `help=` on the chart's primer title, or into the "Reading this chart" primer body. |
+| 977 | 22 | Keep; trim the 90-day sentence to "DoD awards post with about a 90-day delay." |
+| 1000 | 25 | "Discretionary R-1 lines from two PB submissions; swings of 20% or more are material." |
+| 1699 | 19 | Keep as is (already under 20). |
+| 1820 | 29 | Move whole text into the "About execution figures" primer body; replace with "Above-threshold moves needed congressional approval; below-threshold did not." |
+| 1959 | 33 | "Each fact's sentence is a verbatim span of the source narrative. Coverage: {n} of {m} program-level narratives." |
+| 2032 (info) | 56 | Replace the info box with `st.info("No prime awards matched this program's keywords in FY{fy}.")` followed by `with st.expander("Why awards can be missing"):` holding the rest verbatim. |
+| 2073 | 22 | "Keyword-matched DoD prime awards. Treat as leads, not a ledger." |
+| 2550 | 35 | Move into the "About the funding chain" primer body; replace with "House and Senate are shown separately; enacted and net figures come from DD 1416." |
+| 2570 | 51 | Replace with `_ai_disabled_caption()` (it exists; same text the News tab shows). |
+| 2846 | 23 | "AI features are off in this instance; everything shown comes from the local database and USAspending.gov." |
+| 2901 | 47 | Keep "Tolerance ±0.5%." and move the account-exclusion detail into `with st.expander("Reconciliation notes"):` verbatim. |
+| 2918 | 22 | "Tolerance ±0.5%. The latest DD 1416 enacted total is compared with the next-cycle R-1 request." |
+| 1867 (info) | 22 | "No justification narrative for this program; R-2 coverage varies by component and year." |
+
+Every other caption stays. Do not delete any caption that states coverage or a
+limitation; shorten it.
+
+**Theme** (`.streamlit/config.toml` at the repository root, which Community Cloud reads;
+keep the existing `[server]` block):
+
+```toml
+[theme]
+base = "light"
+primaryColor = "#1f4e79"
+backgroundColor = "#ffffff"
+secondaryBackgroundColor = "#f3f5f8"
+textColor = "#1b1f24"
+font = "sans serif"
+```
+
+Streamlit 1.55 (pinned minimum) accepts exactly these keys. Do not use newer keys such
+as `headingFont` or `baseRadius`.
+
+**Tests (`tests/test_app_smoke.py`), every change listed:**
+
+- `MAIN_TAB_LABELS = ["Trends", "Programs", "Rhetoric vs. Budget", "Coverage"]`;
+  `PROFILE_TAB_LABELS = ["Funding", "Justification", "Awards", "News"]`.
+- `test_default_page_renders_data_not_just_imports`: tab label `"Coverage"`; the
+  subheader check becomes `"Reconciliation" in header.value`.
+- `test_program_finder_rerun_keeps_tab_content_mapped`: `session_state["main_tab"] ==
+  "Programs"`; `session_state["profile_tab::0601102A::Army"] == "Justification"`.
+- `test_ask_the_corpus_renders_passages_without_a_key`: expander prefix `"Passages ("`;
+  absent button label `"Answer with AI"`; `main_tab == "Programs"`.
+- `test_transition_panel_renders_inference_label`: expander label `== "Procurement
+  transition"`; assert some `app.markdown` value contains `>Inference<` (the badge);
+  Funding tab label unchanged; `main_tab == "Programs"`.
+- `test_verified_facts_panel_states`: tab label `"Justification"`; expander prefix
+  `"Extracted facts ("`; coverage tab label `"Coverage"`; coverage caption contains
+  `"Extracted facts:"` (rename that caption's leading words accordingly in `app.py`).
+- Add `test_no_parenthetical_qualifiers_in_labels`: read `app.py` and assert the
+  strings `"(AI)"` and `"(inference)"` do not appear anywhere in the file (adjust any
+  comment that still says them).
+
+**README:** the "What it does" table's first column uses the new tab names; the row
+text is otherwise unchanged.
+
+**Definition of done:** every row in the four tables above is applied; the badge helper
+exists and is used exactly where the tables say; no user-visible string contains "(AI)"
+or "(inference)"; every static caption is 20 words or fewer except those the table
+explicitly keeps; the theme renders (primary colour visible on the selected tab and
+buttons); `python -m pytest -q` passes with the updated assertions; permalinks with
+`?tab=finder&pe=…&view=plans` still open the right tab and sub-tab; clicked through in
+a real browser on all four tabs and all four profile sub-tabs for PE 0604274N (Navy),
+with a screenshot description of the badge under "Procurement transition".
+
+**Verify:**
+```bash
+python -m pytest -q
+grep -n "(AI)\|(inference)" app.py            # expect no output
+grep -c "render_badge(" app.py                # expect 5 (1 definition + 4 uses)
+python -m streamlit run app.py --server.port 8501   # click through as described
 ```
 
 ---
