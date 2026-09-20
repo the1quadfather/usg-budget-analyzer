@@ -76,10 +76,26 @@ st.markdown(
     [data-testid="stMetricDelta"] svg {
         display: none;
     }
+    .badge {
+        display: inline-block;
+        font-size: 0.72rem;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+        padding: 2px 8px;
+        border-radius: 999px;
+        background: var(--secondary-background-color);
+        border: 1px solid rgba(0,0,0,0.12);
+    }
     </style>
     """,
     unsafe_allow_html=True,
 )
+
+
+def render_badge(text: str) -> None:
+    st.markdown(
+        f'<span class="badge">{text}</span>', unsafe_allow_html=True
+    )
 
 
 def _demo_allowed_emails() -> set[str]:
@@ -149,10 +165,10 @@ def _sync_profile_view(view: str) -> None:
 def _sync_main_tab_url() -> None:
     """Mirror the tracked, stable tab selection into the shareable URL."""
     keys_by_label = {
-        "Budget Trends": "trends",
-        "Program Finder": "finder",
+        "Trends": "trends",
+        "Programs": "finder",
         "Rhetoric vs. Budget": "rhetoric",
-        "Data Coverage": "coverage",
+        "Coverage": "coverage",
     }
     selected = st.session_state.get("main_tab")
     if selected in keys_by_label:
@@ -163,9 +179,9 @@ def _sync_profile_tab_url(state_key: str) -> None:
     """Mirror a tracked program-profile tab into the shareable URL."""
     keys_by_label = {
         "Funding": "funding",
-        "Plans & Work": "plans",
-        "Contracts & Awards": "awards",
-        "In the News": "news",
+        "Justification": "plans",
+        "Awards": "awards",
+        "News": "news",
     }
     selected = st.session_state.get(state_key)
     if selected in keys_by_label:
@@ -808,7 +824,8 @@ EXECUTION_FYS = list(range(2018, 2027))
 SessionFactory = init_db_connection()
 
 # --- UI Layout ---
-st.title("🇺🇸 DoD Budget Explorer")
+st.title("DoD Budget Explorer")
+st.caption("Official DoD budget data, FY1996–FY2027.")
 dollar_basis = st.radio(
     "R-1 funding dollar basis",
     ["Then-year", "Constant FY2025"],
@@ -833,10 +850,10 @@ def include_deflator_source(sources: list[dict]) -> list[dict]:
     return [*sources, provenance_record()]
 
 tab_definitions = [
-    ("trends", "Budget Trends"),
-    ("finder", "Program Finder"),
+    ("trends", "Trends"),
+    ("finder", "Programs"),
     ("rhetoric", "Rhetoric vs. Budget"),
-    ("coverage", "Data Coverage"),
+    ("coverage", "Coverage"),
 ]
 requested_tab = st.query_params.get("tab", "trends")
 if requested_tab not in {key for key, _ in tab_definitions}:
@@ -921,13 +938,17 @@ with tab_trends:
         )
         st.altair_chart(trend_chart, width="stretch")
         st.caption(
-            "Each year shows its most reliable figure: reported actuals, then "
-            "enacted, then the budget request. Discretionary only — "
-            "reconciliation/mandatory funds are tracked separately. "
-            + (
-                "Amounts use the RDT&E-specific FY2025 Green Book deflator."
-                if constant_dollars else "Amounts are then-year dollars."
-            )
+            "Each year shows its most reliable figure.",
+            help=(
+                "Reported actuals take precedence, followed by enacted and "
+                "then requested amounts. Discretionary only; reconciliation "
+                "and mandatory funds remain separate. "
+                + (
+                    "Amounts use the RDT&E-specific FY2025 Green Book "
+                    "deflator."
+                    if constant_dollars else "Amounts are then-year dollars."
+                )
+            ),
         )
         render_provenance(trend_sources)
         with st.expander("Data table"):
@@ -949,7 +970,8 @@ with tab_trends:
             )
 
     st.divider()
-    st.subheader("Who got paid — account-level obligations")
+    st.subheader("Obligations by recipient")
+    render_badge("Live query")
     st.markdown(
         "Actual contract obligations from each component's RDT&E "
         "appropriation account."
@@ -963,7 +985,7 @@ with tab_trends:
     exec_dim = c3.selectbox("Break down by", ["recipient", "industry", "state"])
 
     breakdown_key = f"breakdown::{exec_comp}::{exec_fy}::{exec_dim}"
-    if st.button("Look up obligations (USAspending.gov)"):
+    if st.button("Load USAspending obligations"):
         with st.spinner("Querying USAspending.gov..."):
             st.session_state[breakdown_key] = fetch_account_breakdown(
                 exec_comp, exec_fy, exec_dim
@@ -977,7 +999,7 @@ with tab_trends:
             st.caption(
                 f"Top {len(breakdown)} by contract obligations, "
                 f"{exec_comp} RDT&E account, FY{exec_fy}. DoD awards post "
-                "with a ~90-day delay; the current fiscal year is partial."
+                "with about a 90-day delay."
             )
             usa_source = [{
                 "filename": "USAspending.gov live API query",
@@ -996,11 +1018,10 @@ with tab_trends:
             )
 
     st.divider()
-    st.subheader("What changed")
+    st.subheader("Changes between submissions")
     st.caption(
-        "Compare discretionary R-1 observations from two PB submissions. "
-        "Swings use the change-feed's 20% materiality threshold; mandatory "
-        "funding remains a separate stream and is not included."
+        "Discretionary R-1 lines from two PB submissions; swings of 20% or "
+        "more are material."
     )
     pb_cycles = fetch_pb_cycles()
     if len(pb_cycles) < 2:
@@ -1085,7 +1106,6 @@ with tab_trends:
 
 # ═══════════════════════════════ Program Finder ══════════════════════════════
 with tab_finder:
-    st.header("Find a program")
     with st.expander("Ask the justification books", expanded=False):
         st.caption(
             "Searches the R-2 narrative text locally (free). The AI answer "
@@ -1111,7 +1131,7 @@ with tab_finder:
                     st.info("No narrative passages matched.")
                 else:
                     with st.expander(
-                        f"Passages considered ({len(passages)})"
+                        f"Passages ({len(passages)})"
                     ):
                         for passage in passages:
                             permalink = _finder_permalink(
@@ -1144,7 +1164,7 @@ with tab_finder:
                                 "No saved answer for this question yet."
                             )
                             if st.button(
-                                "Answer from R-2 narratives (AI)",
+                                "Answer with AI",
                                 key=f"corpus_answer::{question_key}",
                             ):
                                 with st.spinner("Reading the passages..."):
@@ -1171,7 +1191,7 @@ with tab_finder:
                                 "No answer produced.",
                             )
                             if st.button(
-                                "Re-answer (AI)",
+                                "Regenerate with AI",
                                 key=f"corpus_reanswer::{question_key}",
                             ):
                                 with st.spinner("Reading the passages..."):
@@ -1247,7 +1267,7 @@ with tab_finder:
                 uid = current_user_id()
                 res = enricher.adjudicate(query, candidates, user_id=uid,
                                           allow_fresh=False)
-                if res.cold and st.button("Resolve ambiguous match (AI)"):
+                if res.cold and st.button("Resolve with AI"):
                     with st.spinner("Comparing candidates..."):
                         res = enricher.adjudicate(query, candidates,
                                                   user_id=uid,
@@ -1333,9 +1353,9 @@ with tab_finder:
             # ═══ Program profile ═══
             profile_definitions = [
                 ("funding", "Funding"),
-                ("plans", "Plans & Work"),
-                ("awards", "Contracts & Awards"),
-                ("news", "In the News"),
+                ("plans", "Justification"),
+                ("awards", "Awards"),
+                ("news", "News"),
             ]
             requested_view = st.query_params.get("view", "funding")
             if requested_view not in {key for key, _ in profile_definitions}:
@@ -1365,7 +1385,7 @@ with tab_finder:
             # --- Funding ---
             with sub_funding:
                 render_primer(
-                    "How to read this program's funding",
+                    "Reading this chart",
                     primer.PROGRAM_STRUCTURE + primer.FUNDING_BASES,
                 )
                 with SessionFactory() as session:
@@ -1581,16 +1601,18 @@ with tab_finder:
                         width="stretch",
                     )
                     st.caption(
-                        "Each year shows its most reliable figure: reported "
-                        "actuals, then the enacted/current-year figure, then "
-                        "the budget request. Tooltips identify the PB "
-                        "submission supplying each observation. "
-                        + (
-                            "Amounts use the RDT&E-specific FY2025 Green Book "
-                            "deflator."
-                            if constant_dollars else
-                            "Amounts are then-year dollars."
-                        )
+                        "Each year shows its most reliable figure.",
+                        help=(
+                            "Reported actuals take precedence, followed by "
+                            "the enacted or current-year figure and then the "
+                            "request. Tooltips identify the PB submission. "
+                            + (
+                                "Amounts use the RDT&E-specific FY2025 Green "
+                                "Book deflator."
+                                if constant_dollars else
+                                "Amounts are then-year dollars."
+                            )
+                        ),
                     )
                     lineage_pairs = {
                         (sel["pe_number"], sel["agency"]),
@@ -1617,11 +1639,9 @@ with tab_finder:
                             f"{edge['relation']}.{confidence_note}"
                         )
                         with st.expander(
-                            "Lineage evidence: "
+                            "Evidence: "
                             f"{edge['predecessor_pe']} → "
-                            f"{edge['successor_pe']} "
-                            f"({edge['relation']}, "
-                            f"FY{edge['first_fy_after']})"
+                            f"{edge['successor_pe']}"
                         ):
                             if edge["evidence_text"]:
                                 st.write(escape_dollars(edge["evidence_text"]))
@@ -1672,7 +1692,7 @@ with tab_finder:
                         st.altair_chart(yoy_chart.properties(height=160),
                                         width="stretch")
 
-                    with st.expander("Underlying funding table"):
+                    with st.expander("Funding table"):
                         funding_table = pdf[[
                             "fiscal_year", "amount_thousands", "basis",
                             "pb_cycle_label",
@@ -1694,8 +1714,9 @@ with tab_finder:
                         )
 
                 with st.expander(
-                    "Did it transition to procurement? (inference)"
+                    "Procurement transition"
                 ):
+                    render_badge("Inference")
                     st.caption(
                         "This is a lead generator, not a confirmed linkage: "
                         "RDT&E Program Elements and procurement lines have "
@@ -1773,10 +1794,14 @@ with tab_finder:
                         )
 
                 st.divider()
-                st.subheader("Execution: request to net current program")
+                st.subheader("Execution")
                 render_primer(
-                    "What each step means, and why the numbers differ",
-                    primer.EXECUTION_STEPS,
+                    "About execution figures",
+                    primer.EXECUTION_STEPS
+                    + "\n\nDD 1416 reports budget authority—not obligations "
+                    "or outlays. Amounts are then-year dollars. The displayed "
+                    "row is the latest ingested quarter for the selected "
+                    "fiscal year.",
                 )
                 execution, execution_source_rows = fetch_execution_data(
                     (sel["pe_number"],), (sel["agency"],)
@@ -1818,12 +1843,8 @@ with tab_finder:
                         execution_waterfall(execution_row), width="stretch"
                     )
                     st.caption(
-                        "Above-threshold reprogramming required congressional "
-                        "prior approval; below-threshold reprogramming did not. "
-                        "DD 1416 reports budget authority—not obligations or "
-                        "outlays. Amounts are then-year dollars. Latest "
-                        "ingested quarter for this FY: "
-                        f"{execution_row['report_date']}."
+                        "Above-threshold moves needed congressional approval; "
+                        "below-threshold did not."
                     )
                     render_provenance(execution_source_rows)
                     execution_table = execution.rename(columns={
@@ -1831,7 +1852,7 @@ with tab_finder:
                         "fy_end": "Availability end FY",
                         "report_date": "Latest quarter",
                     })
-                    with st.expander("Execution data table"):
+                    with st.expander("Execution table"):
                         st.dataframe(
                             execution_table, width="stretch", hide_index=True
                         )
@@ -1865,9 +1886,8 @@ with tab_finder:
 
                 if not narrs and not accs:
                     st.info(
-                        "No justification narrative for this program. "
-                        "R-2 coverage varies by component and fiscal year; "
-                        "see Data Coverage for the currently ingested corpus."
+                        "No justification narrative for this program; R-2 "
+                        "coverage varies by component and year."
                     )
                 else:
                     pe_level = [n for n in narrs if n.project_number == ""]
@@ -1878,7 +1898,7 @@ with tab_finder:
                             projects.append(n)
                     if pe_level:
                         with st.expander(
-                            f"Program mission description "
+                            f"Mission description "
                             f"(PB{pe_level[0].fiscal_year})", expanded=True
                         ):
                             # Narrative prose is full of dollar amounts, and
@@ -1886,7 +1906,7 @@ with tab_finder:
                             st.write(escape_dollars(pe_level[0].description))
                     if projects:
                         with st.expander(
-                            f"Projects under this program ({len(projects)})"
+                            f"Projects ({len(projects)})"
                         ):
                             for p in sorted(projects,
                                             key=lambda n: n.project_number):
@@ -1953,17 +1973,15 @@ with tab_finder:
                         )
                     else:
                         with st.expander(
-                            f"Verified facts ({len(facts)}) — extracted from "
-                            "the justification text (inference)"
+                            f"Extracted facts ({len(facts)})"
                         ):
+                            render_badge("AI-extracted")
                             st.caption(
-                                "Each fact was pulled by the AI extraction "
-                                "job and kept only when its sentence is a "
-                                "verbatim span of the source narrative. "
-                                "Extraction has covered "
+                                "Each fact's sentence is a verbatim span of "
+                                "the source narrative. Coverage: "
                                 f"{coverage['fact_extractions']:,} of "
                                 f"{coverage['pe_level_narratives']:,} "
-                                "program-level narratives so far."
+                                "program-level narratives."
                             )
                             fact_types = {
                                 "contractor": "Contractor",
@@ -2009,7 +2027,7 @@ with tab_finder:
 
             # --- Contracts & Awards ---
             with sub_awards:
-                render_primer("Why awards never tie to the budget figures",
+                render_primer("About award data",
                               primer.AWARDS_VS_BUDGET)
                 ac1, _ = st.columns([1, 3])
                 award_fy = ac1.selectbox(
@@ -2018,7 +2036,7 @@ with tab_finder:
                 )
                 awards_key = f"awards::{sel['pe_number']}::{award_fy}::{query}"
                 if st.button(
-                    "Search awards (USAspending.gov)",
+                    "Search USAspending awards",
                     on_click=_sync_profile_view,
                     args=("awards",),
                 ):
@@ -2030,15 +2048,19 @@ with tab_finder:
                 if awards is not None:
                     if awards.empty:
                         st.info(
-                            f"No prime awards matched this program's keywords "
-                            f"in FY{award_fy}. Why this can happen even when "
-                            "money moved: award descriptions rarely name the "
-                            "budget program; Other Transactions aren't "
-                            "searchable as a group; work under umbrella "
-                            "vehicles (PIAs, IDIQs) hides in generic prime "
-                            "descriptions — try the subaward search below; "
-                            "and DoD awards post with a ~90-day delay."
+                            "No prime awards matched this program's keywords "
+                            f"in FY{award_fy}."
                         )
+                        with st.expander("Why awards can be missing"):
+                            st.write(
+                                "Why this can happen even when money moved: "
+                                "award descriptions rarely name the budget "
+                                "program; Other Transactions aren't searchable "
+                                "as a group; work under umbrella vehicles "
+                                "(PIAs, IDIQs) hides in generic prime "
+                                "descriptions — try the subaward search below; "
+                                "and DoD awards post with a ~90-day delay."
+                            )
                     else:
                         by_recipient = (
                             awards.groupby("recipient", as_index=False)["amount"]
@@ -2071,10 +2093,8 @@ with tab_finder:
                             },
                         )
                         st.caption(
-                            "Keyword-matched DoD-funded prime awards "
-                            "(contracts and grants/cooperative agreements) — "
-                            "treat as leads, not a ledger: public award "
-                            "records carry no program-element linkage."
+                            "Keyword-matched DoD prime awards. Treat as leads, "
+                            "not a ledger."
                         )
                         award_sources = [{
                             "filename": "USAspending.gov award search",
@@ -2094,11 +2114,16 @@ with tab_finder:
                         )
 
                     subs_key = f"subs::{sel['pe_number']}::{award_fy}::{query}"
-                    if st.button(
-                        "Search subawards (umbrella vehicles)",
+                    search_subawards = st.button(
+                        "Search USAspending subawards",
                         on_click=_sync_profile_view,
                         args=("awards",),
-                    ):
+                    )
+                    st.caption(
+                        "Subawards can reveal work performed through umbrella "
+                        "vehicles."
+                    )
+                    if search_subawards:
                         with st.spinner("Querying subawards..."):
                             st.session_state[subs_key] = fetch_program_subawards(
                                 sel["name"], award_fy, query
@@ -2182,11 +2207,16 @@ with tab_finder:
                         st.caption(
                             "No saved coverage for this program yet."
                         )
-                        if st.button(
-                            "Search recent coverage (AI + Google Search)",
+                        search_news = st.button(
+                            "Search the web with AI",
                             on_click=_sync_profile_view,
                             args=("news",),
-                        ):
+                        )
+                        st.caption(
+                            "Uses Google Search; results are saved only to "
+                            "your history."
+                        )
+                        if search_news:
                             with st.spinner(
                                     "Searching news and public sources..."):
                                 news = enricher.find_open_source_hits(
@@ -2199,11 +2229,16 @@ with tab_finder:
                     else:
                         render_ai_result(news, render_hits,
                                          "No recent coverage found.")
-                        if st.button(
-                            "Refresh coverage (AI + Google Search)",
+                        refresh_news = st.button(
+                            "Refresh web search",
                             on_click=_sync_profile_view,
                             args=("news",),
-                        ):
+                        )
+                        st.caption(
+                            "Uses Google Search; results are saved only to "
+                            "your history."
+                        )
+                        if refresh_news:
                             with st.spinner("Searching for newer coverage..."):
                                 fresh = enricher.find_open_source_hits(
                                     sel["name"], sel["pe_number"],
@@ -2283,7 +2318,7 @@ with tab_rhetoric:
                     headline as ca_headline, summarize as ca_summarize,
                 )
 
-                st.subheader("What Congress authorized")
+                st.subheader("Authorization")
                 render_primer("Authorization versus appropriation",
                               primer.AUTHORIZATION_VS_APPROPRIATION)
                 with SessionFactory() as session:
@@ -2407,7 +2442,7 @@ with tab_rhetoric:
                             f"{biggest['rationale']}"
                         )
 
-                    with st.expander("Line-by-line committee actions"):
+                    with st.expander("Committee actions"):
                         committee_table = ca_rows.to_pandas()[[
                             "fiscal_year", "chamber", "pe_number",
                             "program_title", "budget_activity_title",
@@ -2465,9 +2500,16 @@ with tab_rhetoric:
                         )
                 st.caption(coverage_note())
 
-                st.subheader("Request → authorization → execution")
-                render_primer("What each stage means",
-                              primer.EXECUTION_STEPS)
+                st.subheader("Funding chain")
+                render_primer(
+                    "About the funding chain",
+                    primer.EXECUTION_STEPS
+                    + "\n\nHouse and Senate authorizations are shown "
+                    "separately. DD 1416 supplies enacted appropriation and "
+                    "the latest net program after statutory adjustments and "
+                    "reprogramming; it does not report outlays. All stages "
+                    "in this chart are then-year dollars.",
+                )
                 execution, execution_source_rows = fetch_execution_data(
                     tuple(ca_pes), tuple(ca_agencies)
                 )
@@ -2548,11 +2590,8 @@ with tab_rhetoric:
                     )
                     st.altair_chart(chain_chart, width="stretch")
                     st.caption(
-                        "House and Senate authorizations are shown separately. "
-                        "DD 1416 supplies enacted appropriation and the latest "
-                        "net program after statutory adjustments and "
-                        "reprogramming; it does not report outlays. All stages "
-                        "in this chart are then-year dollars."
+                        "House and Senate are shown separately; enacted and "
+                        "net figures come from DD 1416."
                     )
                     render_provenance(execution_source_rows)
                     render_table_downloads(
@@ -2564,18 +2603,11 @@ with tab_rhetoric:
 
             # ── Optional AI layer: open-source emphasis ───────────────────
             st.divider()
-            st.subheader("Open-source emphasis (AI)")
+            st.subheader("Public emphasis")
+            render_badge("AI estimate")
             enricher_r = get_enricher()
             if enricher_r is None:
-                st.caption(
-                    "Optional, and off in this instance — no Gemini API key "
-                    "is configured. With your own GEMINI_API_KEY (an "
-                    "environment variable locally, or a Secret on Streamlit "
-                    "Community Cloud) and a restart, this adds an "
-                    "AI-characterized signal for how much the program was "
-                    "publicly discussed. The congressional figures above "
-                    "need no key."
-                )
+                st.caption(_ai_disabled_caption())
             elif not sel_cands:
                 st.caption("Select at least one program element above.")
             else:
@@ -2811,7 +2843,7 @@ with tab_rhetoric:
 
 # ═══════════════════════════════ Data Coverage ═══════════════════════════════
 with tab_coverage:
-    st.header("What this tool covers")
+    st.header("Coverage")
     stats = fetch_coverage_stats()
     s1, s2, s3, s4, s5 = st.columns(5)
     s1.metric("Programs tracked", f"{stats['programs']:,}")
@@ -2830,23 +2862,21 @@ with tab_coverage:
     else:
         st.caption("Procurement coverage: no fiscal years currently ingested.")
     st.caption(
-        f"Verified facts: {stats['narrative_facts']:,} facts on "
+        f"Extracted facts: {stats['narrative_facts']:,} facts on "
         f"{stats['fact_pes']:,} programs, from "
         f"{stats['fact_extractions']:,} of "
         f"{stats['pe_level_narratives']:,} program-level narratives "
         "extracted so far."
     )
     render_primer(
-        "How the numbers relate: program elements, projects, request, "
-        "authorization, appropriation, execution, and awards",
+        "How the numbers relate",
         primer.GLOSSARY,
     )
 
     if get_enricher() is None:
         st.caption(
-            "AI features are off in this instance — no Gemini API key is "
-            "configured. Everything shown comes from the local database and "
-            "USAspending.gov."
+            "AI features are off in this instance; everything shown comes "
+            "from the local database and USAspending.gov."
         )
     else:
         try:
@@ -2895,16 +2925,18 @@ with tab_coverage:
 - **Fresh lookups are metered**, so a busy month can't run up an unbounded bill. Anything already analyzed keeps loading normally even after the allowance runs out.
 """)
 
-    st.subheader("Does it tie?")
+    st.subheader("Reconciliation")
 
     st.markdown("#### R-1 budget exhibits")
-    st.caption(
-        "Tolerance: ±0.5%. For PB2027, every DoD-scope row ties to zero "
-        "after excluding non-RDT&E accounts 0130D, 0390D, 3007D, and "
-        "0107D; the published figure is the printed grand total minus those "
-        "accounts. R-1 reference workbooks are not shipped with the app; "
-        "when they are unavailable, rows are marked no_reference."
-    )
+    st.caption("Tolerance ±0.5%.")
+    with st.expander("Reconciliation notes"):
+        st.write(
+            "For PB2027, every DoD-scope row ties to zero after excluding "
+            "non-RDT&E accounts 0130D, 0390D, 3007D, and 0107D; the "
+            "published figure is the printed grand total minus those "
+            "accounts. R-1 reference workbooks are not shipped with the "
+            "app; when they are unavailable, rows are marked no_reference."
+        )
     r1_tie_out, r1_sources = fetch_r1_tie_out()
     st.dataframe(r1_tie_out, width="stretch", hide_index=True)
     render_table_downloads(
@@ -2916,9 +2948,8 @@ with tab_coverage:
 
     st.markdown("#### DD 1416 execution reports")
     st.caption(
-        "Tolerance: ±0.5%. The latest DD 1416 enacted total is compared "
-        "with the next-cycle R-1 CY Request; residuals are reported rather "
-        "than hidden."
+        "Tolerance ±0.5%. The latest DD 1416 enacted total is compared with "
+        "the next-cycle R-1 request."
     )
     dd1416_tie_out, dd1416_sources = fetch_dd1416_tie_out()
     st.dataframe(dd1416_tie_out, width="stretch", hide_index=True)

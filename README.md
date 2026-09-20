@@ -13,10 +13,10 @@ context. Everything runs locally against a SQLite database.
 
 | Tab | Question it answers |
 |---|---|
-| **Budget Trends** | How has RDT&E funding moved by component, FY1996–FY2027, in then-year or constant FY2025 dollars? Who got paid from each appropriation account? |
-| **Program Finder** | Which budget program is this name / news quote / PE number? Then a full profile: vintage-labeled funding, request-to-net execution, official plans, awards, and recent coverage |
+| **Trends** | How has RDT&E funding moved by component, FY1996–FY2027, in then-year or constant FY2025 dollars? Who got paid from each appropriation account? |
+| **Programs** | Which budget program is this name / news quote / PE number? Then a full profile: vintage-labeled funding, request-to-net execution, official plans, awards, and recent coverage |
 | **Rhetoric vs. Budget** | Did the money follow the talk? Follow request → separate House/Senate authorization → enacted appropriation → reprogramming → net current program, with optional AI-characterized public emphasis |
-| **Data Coverage** | What's ingested, what's live-queried, and the known blind spots |
+| **Coverage** | What's ingested, what's live-queried, and the known blind spots |
 
 Program matching is multi-stage: exact PE-number lookup, lexical matching
 over titles/acronyms/project names, and semantic embeddings enriched with

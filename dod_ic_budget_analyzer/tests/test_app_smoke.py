@@ -7,16 +7,16 @@ from streamlit.testing.v1 import AppTest
 
 
 MAIN_TAB_LABELS = [
-    "Budget Trends",
-    "Program Finder",
+    "Trends",
+    "Programs",
     "Rhetoric vs. Budget",
-    "Data Coverage",
+    "Coverage",
 ]
 PROFILE_TAB_LABELS = [
     "Funding",
-    "Plans & Work",
-    "Contracts & Awards",
-    "In the News",
+    "Justification",
+    "Awards",
+    "News",
 ]
 
 
@@ -42,10 +42,10 @@ def test_default_page_renders_data_not_just_imports() -> None:
     assert len(app.get("vega_lite_chart")) >= 1
     assert len(app.dataframe) >= 1
     coverage_tab = next(
-        tab for tab in app.get("tab") if tab.label == "Data Coverage"
+        tab for tab in app.get("tab") if tab.label == "Coverage"
     )
     assert any(
-        "Does it tie" in header.value for header in coverage_tab.subheader
+        "Reconciliation" in header.value for header in coverage_tab.subheader
     )
 
 
@@ -59,7 +59,7 @@ def test_program_finder_rerun_keeps_tab_content_mapped(monkeypatch) -> None:
     app.run()
 
     assert _main_tab_labels(app) == MAIN_TAB_LABELS
-    assert app.session_state["main_tab"] == "Program Finder"
+    assert app.session_state["main_tab"] == "Programs"
 
     # Skip persistent demand logging in this deterministic UI test.
     app.session_state["_logged_query"] = "0601102A"
@@ -67,9 +67,9 @@ def test_program_finder_rerun_keeps_tab_content_mapped(monkeypatch) -> None:
 
     assert not app.exception
     assert _main_tab_labels(app) == MAIN_TAB_LABELS
-    assert app.session_state["main_tab"] == "Program Finder"
+    assert app.session_state["main_tab"] == "Programs"
     assert _profile_tab_labels(app) == PROFILE_TAB_LABELS
-    assert app.session_state["profile_tab::0601102A::Army"] == "Plans & Work"
+    assert app.session_state["profile_tab::0601102A::Army"] == "Justification"
     assert any(metric.label == "Net current program" for metric in app.metric)
 
 
@@ -90,18 +90,18 @@ def test_ask_the_corpus_renders_passages_without_a_key(monkeypatch) -> None:
     assert not app.exception
     passage_expander = next(
         expander for expander in app.expander
-        if expander.label.startswith("Passages considered (")
+        if expander.label.startswith("Passages (")
     )
     assert any(
         "0603032F" in markdown.value
         for markdown in passage_expander.markdown
     )
     assert not any(
-        button.label == "Answer from R-2 narratives (AI)"
+        button.label == "Answer with AI"
         for button in app.button
     )
     assert _main_tab_labels(app) == MAIN_TAB_LABELS
-    assert app.session_state["main_tab"] == "Program Finder"
+    assert app.session_state["main_tab"] == "Programs"
 
 
 def test_transition_panel_renders_inference_label(monkeypatch) -> None:
@@ -118,10 +118,14 @@ def test_transition_panel_renders_inference_label(monkeypatch) -> None:
         app.run()
         assert not app.exception
         assert _main_tab_labels(app) == MAIN_TAB_LABELS
-        assert app.session_state["main_tab"] == "Program Finder"
+        assert app.session_state["main_tab"] == "Programs"
         assert _profile_tab_labels(app) == PROFILE_TAB_LABELS
         assert any(
-            "inference" in expander.label for expander in app.expander
+            expander.label == "Procurement transition"
+            for expander in app.expander
+        )
+        assert any(
+            ">Inference<" in markdown.value for markdown in app.markdown
         )
         return app
 
@@ -168,16 +172,16 @@ def test_verified_facts_panel_states(monkeypatch) -> None:
         app.run()
         assert not app.exception
         assert _main_tab_labels(app) == MAIN_TAB_LABELS
-        assert app.session_state["main_tab"] == "Program Finder"
+        assert app.session_state["main_tab"] == "Programs"
         assert _profile_tab_labels(app) == PROFILE_TAB_LABELS
         return app
 
     facts_app = render("0101226N", "Navy")
     facts_tab = next(
-        tab for tab in facts_app.get("tab") if tab.label == "Plans & Work"
+        tab for tab in facts_app.get("tab") if tab.label == "Justification"
     )
     assert any(
-        expander.label.startswith("Verified facts (")
+        expander.label.startswith("Extracted facts (")
         for expander in facts_tab.expander
     )
     assert any(
@@ -187,7 +191,7 @@ def test_verified_facts_panel_states(monkeypatch) -> None:
 
     empty_app = render("0603032F", "Air Force")
     empty_tab = next(
-        tab for tab in empty_app.get("tab") if tab.label == "Plans & Work"
+        tab for tab in empty_app.get("tab") if tab.label == "Justification"
     )
     assert any(
         "not yet been extracted" in caption.value
@@ -200,12 +204,20 @@ def test_verified_facts_panel_states(monkeypatch) -> None:
     assert not coverage_app.exception
     coverage_tab = next(
         tab for tab in coverage_app.get("tab")
-        if tab.label == "Data Coverage"
+        if tab.label == "Coverage"
     )
     assert any(
-        "Verified facts:" in caption.value
+        "Extracted facts:" in caption.value
         for caption in coverage_tab.caption
     )
+
+
+def test_no_parenthetical_qualifiers_in_labels() -> None:
+    app_path = Path(__file__).parents[1] / "app.py"
+    source = app_path.read_text(encoding="utf-8")
+
+    assert "(AI)" not in source
+    assert "(inference)" not in source
 
 
 def test_configured_demo_allowlist_fails_closed_for_anonymous_user(
