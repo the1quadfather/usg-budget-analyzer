@@ -75,7 +75,8 @@ tab-reordering bug reached `main` — it passed the smoke test and nobody clicke
 | T10b Transition candidates + golden set + eval | shipped | `analysis/transition.py` (NARRATIVE/FUZZY/SEMANTIC + research rule), 20-case golden set, recall@3 16/16, negatives 4/4, 55 ms/query; commit `38ae87a` |
 | T10c Transition panel | shipped | "Did it transition to procurement? (inference)" on Program Finder → Funding, `procurement_sources()` provenance; AppTest covers F-15EX, a research PE, and an empty case; browser-verified; commit `b3d69ba` |
 | T14d Thinking budget for cited answers | shipped | shared `_generate_with_thinking` helper; `narrative_answer` capped at 1,024 thinking / 2,048 output; live check 464 thinking tokens, $0.0057 vs $0.0135 baseline, 4 cited sentences; commit `1cbd764` |
-| T15c | **open** | Verified facts panel on Plans & Work plus a coverage caption (spec written 2026-09-19). Remaining follow-ups: accomplishments corpus (T15b note), detector false positive (T11c note). |
+| T15c Verified facts panel | shipped | "Verified facts (N) … (inference)" on Plans & Work with honest coverage (50 of 4,988), Data Coverage caption, three-state AppTest; browser-verified; commit `149c314` |
+| (none) | — | **All roadmap tasks and follow-ups T14d, T15c are shipped as of 2026-09-20.** Remaining ideas: extend extraction to `pe_accomplishments` (T15b note), fix the T11b detector false positive (T11c note), register R-2 books in `source_documents` (T11c note). |
 
 Database ground truth, queried 2026-09-09:
 
