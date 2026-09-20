@@ -352,7 +352,7 @@ def render_ai_result(res, render_fn, empty_msg: str = "Nothing found.") -> None:
         st.warning(
             "The web search didn't run for this program, so there's nothing "
             "sourced to show. Low-visibility programs often produce no "
-            "search-worthy coverage. Try again, or check Plans & Work for "
+            "search-worthy coverage. Try again, or check Justification for "
             "what the official justification says."
         )
         return
@@ -2906,12 +2906,12 @@ with tab_coverage:
 | **R-1 budget exhibits** (comptroller.war.gov) | FY{stats['fy_min']}–FY{stats['fy_max']} observations across PB submissions. Official XLSX for FY2012+; parsed PDFs before that | Funding trends, vintage labels, and program funding histories (local database) |
 | **DD 1416 quarterly execution reports** (comptroller.war.gov) | {stats['execution_rows']:,} rows from {stats['execution_files']:,} official XLSX files; FY{stats['execution_fy_min'] or '—'}–FY{stats['execution_fy_max'] or '—'} | Request, enacted appropriation, statutory adjustments, above-/below-threshold reprogramming, and net current program |
 | **R-2 justification books** (official XML and service PDFs) | {stats['narratives']:,} narratives and {stats['accomplishments']:,} accomplishment line items. {r2_detail} | Mission descriptions and "Plans & Work"; also sharpens program matching |
-| **USAspending.gov** (live queries) | Prime awards (contracts + grants/cooperative agreements), subawards, account-level obligations | "Contracts & Awards" and "Who got paid" |
-| **AI enrichment** (optional) | Google-grounded search and match resolution | "In the News", "Rhetoric vs. Budget", and ambiguity resolution |
+| **USAspending.gov** (live queries) | Prime awards (contracts + grants/cooperative agreements), subawards, account-level obligations | "Awards" and "Who got paid" |
+| **AI enrichment** (optional) | Google-grounded search and match resolution | "News", "Rhetoric vs. Budget", and ambiguity resolution |
 
 **Known blind spots — an empty result is often one of these, not an error:**
 
-- **Award ↔ program linkage doesn't exist in public data.** Award records carry no program-element field, so the Contracts & Awards search is keyword matching against award descriptions. Awards described generically won't surface.
+- **Award ↔ program linkage doesn't exist in public data.** Award records carry no program-element field, so the Awards search is keyword matching against award descriptions. Awards described generically won't surface.
 - **Umbrella vehicles hide task detail.** Work under PIAs, OTAs, and IDIQ task orders often posts under a generic umbrella description; the subaward search catches some, not all.
 - **Other Transactions** are not a searchable instrument group in the USAspending API.
 - **Timing:** DoD awards post with a ~90-day display delay, and the current fiscal year is always partial.
@@ -2921,7 +2921,7 @@ with tab_coverage:
 **How the AI features are stored and metered**
 
 - **Match resolution is shared.** It doesn't use web search, so once one person resolves an ambiguous name, everyone else's identical search resolves instantly and for free.
-- **Web-grounded results are yours alone.** "In the News" and "Rhetoric vs. Budget" run against Google Search, and Google's API terms allow those results to be shown only to the person who asked for them. They're saved to your own history, never pooled, and always displayed with Google's Search Suggestions.
+- **Web-grounded results are yours alone.** "News" and "Rhetoric vs. Budget" run against Google Search, and Google's API terms allow those results to be shown only to the person who asked for them. They're saved to your own history, never pooled, and always displayed with Google's Search Suggestions.
 - **Fresh lookups are metered**, so a busy month can't run up an unbounded bill. Anything already analyzed keeps loading normally even after the allowance runs out.
 """)
 
