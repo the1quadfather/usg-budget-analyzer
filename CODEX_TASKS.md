@@ -75,7 +75,7 @@ tab-reordering bug reached `main` — it passed the smoke test and nobody clicke
 | T10b Transition candidates + golden set + eval | shipped | `analysis/transition.py` (NARRATIVE/FUZZY/SEMANTIC + research rule), 20-case golden set, recall@3 16/16, negatives 4/4, 55 ms/query; commit `38ae87a` |
 | T10c Transition panel | shipped | "Did it transition to procurement? (inference)" on Program Finder → Funding, `procurement_sources()` provenance; AppTest covers F-15EX, a research PE, and an empty case; browser-verified; commit `b3d69ba` |
 | T14d Thinking budget for cited answers | shipped | shared `_generate_with_thinking` helper; `narrative_answer` capped at 1,024 thinking / 2,048 output; live check 464 thinking tokens, $0.0057 vs $0.0135 baseline, 4 cited sentences; commit `1cbd764` |
-| (none) | — | **Every roadmap task T8–T15 plus T14d is shipped as of 2026-09-19.** Remaining follow-ups live in the T15b (accomplishments corpus), T11c (detector false positive), and T15 (facts UI) notes. |
+| T15c | **open** | Verified facts panel on Plans & Work plus a coverage caption (spec written 2026-09-19). Remaining follow-ups: accomplishments corpus (T15b note), detector false positive (T11c note). |
 
 Database ground truth, queried 2026-09-09:
 
@@ -2240,6 +2240,100 @@ python -m analysis.ai_budget --reset-runtime
 python -m storage.build_archive
 python scripts/build_release.py --date 2099-01-01 && python -c "import shutil; shutil.rmtree('../release/usg-budgets-2099-01-01')"
 git status --short
+```
+
+---
+
+### T15c — Verified facts panel
+
+**Files:** `app.py` (Program Finder → Plans & Work sub-tab, one new expander; Data
+Coverage tab, one caption line and one cached query), `tests/test_app_smoke.py` (one new
+test). Nothing else: no schema, no extraction, no new tabs.
+**Depends on:** T15b merged (it is: archive blob `8b89d309…`, 25 facts, 50 extractions).
+**Written 2026-09-19.**
+
+**Verified facts (shipped archive, 2026-09-19):**
+
+- `narrative_facts` has 25 rows over 9 PEs: `0101226N` Navy 9 (Submarine Acoustic
+  Warfare Development; 66 funding lines, 10 narratives), `0203752A` Army 4, and seven
+  PEs with 1–2. Types: `test_event` 12, `contractor` 6, `transition` 5, `location` 2.
+  Every row has `fiscal_year` 2027, `narrative_table == "pe_narratives"`, and
+  `sentence == description[char_start:char_end]` (verified 25/25 at T15b review).
+- `narrative_extractions` has 50 rows, one per PE-level FY2027 narrative, out of **4,988**
+  distinct PE-level narrative texts (`SELECT COUNT(DISTINCT description) FROM
+  pe_narratives WHERE project_number = ''`). Coverage is therefore about 1%, and the
+  panel must say so rather than let an empty panel read as "no facts exist".
+- The Plans & Work block (`with sub_plans:` in `app.py`) first shows `st.info` when a PE
+  has neither narratives nor accomplishments, else the mission description expander, a
+  projects expander, and the accomplishments picker. Facts derive from narratives, so
+  the new expander goes at the **end of the `else:` branch**, after the accomplishments
+  section and before the `# --- Contracts & Awards ---` comment.
+- `render_table_downloads(df, name=, key=, sources=)` and `fetch_funding_sources(...)`
+  exist; R-2 books are not registered in `source_documents` (T11c finding), so the
+  book filename is shown as a column and the provenance block lists the program's R-1
+  sources plus a note.
+- The Data Coverage tab computes `fetch_coverage_stats()` (a dict of scalar SQL counts)
+  and prints a procurement coverage caption after the five metrics. Add the facts
+  counts to that dict and one caption after the procurement one.
+- `0603032F` Air Force has narratives (Skyborg) and **no** facts: the "not yet
+  extracted" case. `0101226N` Navy is the "has facts" case.
+
+**Do (Plans & Work):**
+
+```
+@st.cache_data(ttl=3600, show_spinner=False)
+def fetch_narrative_facts(pe_number: str, agency: str) -> list[dict]:
+    # rows of narrative_facts for the PE joined to pe_narratives on narrative_id for source_file,
+    # ordered by fact_type, fiscal_year desc, value; keys: fact_type, value, fiscal_year,
+    # sentence, source_file, char_start, char_end
+```
+
+Then, inside the `else:` branch after the accomplishments section:
+
+- `facts = fetch_narrative_facts(...)`; `coverage = fetch_coverage_stats()`.
+- If `facts` is empty: `st.caption(f"Structured facts have not yet been extracted for this program. Extraction has covered {coverage['fact_extractions']:,} of {coverage['pe_level_narratives']:,} program-level narratives so far.")`.
+- Otherwise `with st.expander(f"Verified facts ({len(facts)}) — extracted from the justification text (inference)")`:
+  a caption: "Each fact was pulled by the AI extraction job and kept only when its
+  sentence is a verbatim span of the source narrative. Extraction has covered N of M
+  program-level narratives so far."; a `st.dataframe` with columns Type (map
+  `contractor`→"Contractor", `transition`→"Transition", `test_event`→"Test event",
+  `location`→"Location"), Value, FY, Source book (`source_file`); then
+  `with st.expander("Source sentences")`: for each fact `st.markdown(f"**{value}** · {Type} · FY{fy}")`
+  and `st.caption(escape_dollars(sentence))`; then `render_table_downloads(table,
+  name=f"{pe}_facts", key=f"facts::{pe}::{agency}", sources=include_deflator_source(
+  fetch_funding_sources(pe_numbers=(pe,), agencies=(agency,))))` and a caption "Source
+  books are named in the table; they are not yet registered as source documents."
+
+**Do (Data Coverage):** add to `fetch_coverage_stats()` the keys `narrative_facts`
+(`COUNT(*) FROM narrative_facts`), `fact_extractions` (`COUNT(*) FROM
+narrative_extractions`), `fact_pes` (`COUNT(DISTINCT pe_number || agency) FROM
+narrative_facts`), and `pe_level_narratives` (the distinct-description count above; it
+takes about 50 ms on the shipped database, acceptable under the existing 1-hour cache).
+After the procurement caption: `st.caption(f"Verified facts: {narrative_facts:,} facts on
+{fact_pes:,} programs, from {fact_extractions:,} of {pe_level_narratives:,} program-level
+narratives extracted so far.")`. Use these same keys in the Plans & Work captions so the
+numbers cannot drift apart.
+
+**Test (`tests/test_app_smoke.py`, `test_verified_facts_panel_states(monkeypatch)`):**
+`HF_HUB_OFFLINE=1`, `default_timeout=120`; render with query params `tab=finder`,
+`pe=0101226N`, `agency=Navy`, `view=plans`; assert no exception, main and profile tab
+labels unchanged, `session_state["main_tab"] == "Program Finder"`; assert some expander
+label starts with `"Verified facts ("`; assert a dataframe inside the Plans & Work tab
+contains `"Developmental Testing"`. Render again with `pe=0603032F`, `agency=Air Force`,
+`view=plans`; assert a caption in that tab contains `"not yet been extracted"`. Render
+`tab=coverage` and assert a caption contains `"Verified facts:"`.
+
+**Definition of done:** the two Plans & Work states and the coverage caption render as
+specified from the shipped archive; the same coverage keys feed both places; no tab
+label or order changes; `python -m pytest -q` passes; clicked through in a real browser
+on PE 0101226N (Navy) and PE 0603032F (Air Force) under Plans & Work, plus the Data
+Coverage tab, with the Program Finder tab staying selected across the reruns.
+
+**Verify:**
+```bash
+python -m pytest -q
+python -c "import sys; sys.path.insert(0,'.'); import sqlite3, config; c=sqlite3.connect(str(config.PROCESSED_DIR/'usg_budgets.db')); print(c.execute('select count(*) from narrative_facts').fetchone()[0], c.execute('select count(*) from narrative_extractions').fetchone()[0], c.execute(\"select count(distinct description) from pe_narratives where project_number=''\").fetchone()[0])"   # 25 50 4988
+python -m streamlit run app.py --server.port 8501     # click through as described
 ```
 
 ---
