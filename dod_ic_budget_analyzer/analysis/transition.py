@@ -299,25 +299,30 @@ def _mark_ambiguity(candidates: list[TransitionCandidate]) -> list[TransitionCan
     ]
 
 
-def propose_transitions(session, pe_number: str, agency: str, *,
-                        limit: int = 5) -> list[TransitionCandidate]:
-    """Return ranked procurement-transition candidates for one PE."""
+def propose_transitions_with_status(
+    session, pe_number: str, agency: str, *, limit: int = 5
+) -> tuple[list[TransitionCandidate], bool]:
+    """Return candidates and whether semantic title matching was available."""
     if limit <= 0 or is_research_pe(pe_number):
-        return []
+        return [], True
     program_name = _program_name(session, pe_number, agency)
     if not program_name or program_name.startswith("Classified"):
-        return []
+        return [], True
     agencies = ALLOWED_P1_AGENCIES.get(agency, ())
     if not agencies:
-        return []
+        return [], True
 
     proposed = _narrative_candidates(session, pe_number, agency, agencies)
     proposed.extend(_fuzzy_candidates(
         session, pe_number, agency, program_name, agencies
     ))
-    proposed.extend(_semantic_candidates(
-        pe_number, agency, program_name, agencies
-    ))
+    semantic_available = True
+    try:
+        proposed.extend(_semantic_candidates(
+            pe_number, agency, program_name, agencies
+        ))
+    except (ImportError, OSError):
+        semantic_available = False
 
     merged: dict[tuple[str, str], TransitionCandidate] = {}
     for candidate in proposed:
@@ -331,4 +336,13 @@ def propose_transitions(session, pe_number: str, agency: str, *,
     ranked = sorted(
         merged.values(), key=lambda candidate: (-candidate.confidence, candidate.bli)
     )
-    return _mark_ambiguity(ranked)[:limit]
+    return _mark_ambiguity(ranked)[:limit], semantic_available
+
+
+def propose_transitions(session, pe_number: str, agency: str, *,
+                        limit: int = 5) -> list[TransitionCandidate]:
+    """Return ranked procurement-transition candidates for one PE."""
+    candidates, _ = propose_transitions_with_status(
+        session, pe_number, agency, limit=limit
+    )
+    return candidates

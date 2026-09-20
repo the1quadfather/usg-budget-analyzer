@@ -629,14 +629,19 @@ def fetch_funding_sources(
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def fetch_transition_candidates(pe_number: str, agency: str) -> list[dict]:
-    from analysis.transition import propose_transitions
+def fetch_transition_candidates(
+    pe_number: str, agency: str
+) -> tuple[list[dict], bool]:
+    from analysis.transition import propose_transitions_with_status
     SessionFactory = init_db_connection()
     with SessionFactory() as session:
-        return [
-            dataclasses.asdict(candidate)
-            for candidate in propose_transitions(session, pe_number, agency)
-        ]
+        candidates, semantic_available = propose_transitions_with_status(
+            session, pe_number, agency
+        )
+        return (
+            [dataclasses.asdict(candidate) for candidate in candidates],
+            semantic_available,
+        )
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -1723,9 +1728,17 @@ with tab_finder:
                         "no shared key."
                     )
                     from analysis.transition import is_research_pe
-                    transition_candidates = fetch_transition_candidates(
-                        sel["pe_number"], sel["agency"]
+                    transition_candidates, semantic_available = (
+                        fetch_transition_candidates(
+                            sel["pe_number"], sel["agency"]
+                        )
                     )
+                    if not semantic_available:
+                        st.caption(
+                            "Semantic title matching is unavailable on this "
+                            "instance; showing narrative evidence and "
+                            "name-similarity matches only."
+                        )
                     if is_research_pe(sel["pe_number"]):
                         st.caption(
                             "Basic and applied research (budget activities "

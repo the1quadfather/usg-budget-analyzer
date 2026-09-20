@@ -161,6 +161,14 @@ def test_verified_facts_panel_states(monkeypatch) -> None:
     monkeypatch.setenv("HF_HUB_OFFLINE", "1")
     st.cache_data.clear()
     st.cache_resource.clear()
+    from analysis import transition
+
+    def missing_semantic_model(*args, **kwargs):
+        raise OSError("model is not cached")
+
+    monkeypatch.setattr(
+        transition, "_semantic_candidates", missing_semantic_model
+    )
     app_path = Path(__file__).parents[1] / "app.py"
 
     def render(pe_number: str, agency: str) -> AppTest:
@@ -196,6 +204,13 @@ def test_verified_facts_panel_states(monkeypatch) -> None:
     assert any(
         "not yet been extracted" in caption.value
         for caption in empty_tab.caption
+    )
+    empty_funding_tab = next(
+        tab for tab in empty_app.get("tab") if tab.label == "Funding"
+    )
+    assert any(
+        "Semantic title matching is unavailable" in caption.value
+        for caption in empty_funding_tab.caption
     )
 
     coverage_app = AppTest.from_file(str(app_path), default_timeout=120)
