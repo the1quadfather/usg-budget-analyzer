@@ -2905,7 +2905,7 @@ with tab_coverage:
 |---|---|---|
 | **R-1 budget exhibits** (comptroller.war.gov) | FY{stats['fy_min']}–FY{stats['fy_max']} observations across PB submissions. Official XLSX for FY2012+; parsed PDFs before that | Funding trends, vintage labels, and program funding histories (local database) |
 | **DD 1416 quarterly execution reports** (comptroller.war.gov) | {stats['execution_rows']:,} rows from {stats['execution_files']:,} official XLSX files; FY{stats['execution_fy_min'] or '—'}–FY{stats['execution_fy_max'] or '—'} | Request, enacted appropriation, statutory adjustments, above-/below-threshold reprogramming, and net current program |
-| **R-2 justification books** (official XML and service PDFs) | {stats['narratives']:,} narratives and {stats['accomplishments']:,} accomplishment line items. {r2_detail} | Mission descriptions and "Plans & Work"; also sharpens program matching |
+| **R-2 justification books** (official XML and service PDFs) | {stats['narratives']:,} narratives and {stats['accomplishments']:,} accomplishment line items. {r2_detail} | Mission descriptions and "Justification"; also sharpens program matching |
 | **USAspending.gov** (live queries) | Prime awards (contracts + grants/cooperative agreements), subawards, account-level obligations | "Awards" and "Who got paid" |
 | **AI enrichment** (optional) | Google-grounded search and match resolution | "News", "Rhetoric vs. Budget", and ambiguity resolution |
 
