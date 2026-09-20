@@ -11,7 +11,11 @@ from sqlalchemy.orm import Session
 APP_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(APP_DIR))
 
-from analysis.transition import is_research_pe, propose_transitions
+from analysis.transition import (
+    is_research_pe,
+    propose_transitions,
+    propose_transitions_with_status,
+)
 from storage.db import (
     Base,
     PEAccomplishment,
@@ -88,6 +92,25 @@ class TransitionTests(unittest.TestCase):
         self.assertEqual(candidates[0].bli, "F015EX")
         self.assertEqual(candidates[0].strategy, "FUZZY")
         self.assertGreaterEqual(candidates[0].confidence, 0.95)
+
+    def test_missing_semantic_model_keeps_fuzzy_candidates(self):
+        self._program("0207146F", "F-15EX")
+        self._procurement(
+            "F015EX", "F-15EX", "Aircraft Procurement, Air Force"
+        )
+        self.session.commit()
+
+        with patch(
+            "analysis.transition._semantic_candidates",
+            side_effect=OSError("model is not cached"),
+        ):
+            candidates, semantic_available = propose_transitions_with_status(
+                self.session, "0207146F", "Air Force"
+            )
+
+        self.assertFalse(semantic_available)
+        self.assertEqual(candidates[0].bli, "F015EX")
+        self.assertEqual(candidates[0].strategy, "FUZZY")
 
     def test_bli_citation_yields_narrative_evidence(self):
         self._program("0604258N", "Target Systems Development", "Navy")
