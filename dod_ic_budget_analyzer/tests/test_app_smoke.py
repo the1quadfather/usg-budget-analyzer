@@ -153,6 +153,61 @@ def test_transition_panel_renders_inference_label(monkeypatch) -> None:
     )
 
 
+def test_verified_facts_panel_states(monkeypatch) -> None:
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    st.cache_data.clear()
+    st.cache_resource.clear()
+    app_path = Path(__file__).parents[1] / "app.py"
+
+    def render(pe_number: str, agency: str) -> AppTest:
+        app = AppTest.from_file(str(app_path), default_timeout=120)
+        app.query_params["tab"] = "finder"
+        app.query_params["pe"] = pe_number
+        app.query_params["agency"] = agency
+        app.query_params["view"] = "plans"
+        app.run()
+        assert not app.exception
+        assert _main_tab_labels(app) == MAIN_TAB_LABELS
+        assert app.session_state["main_tab"] == "Program Finder"
+        assert _profile_tab_labels(app) == PROFILE_TAB_LABELS
+        return app
+
+    facts_app = render("0101226N", "Navy")
+    facts_tab = next(
+        tab for tab in facts_app.get("tab") if tab.label == "Plans & Work"
+    )
+    assert any(
+        expander.label.startswith("Verified facts (")
+        for expander in facts_tab.expander
+    )
+    assert any(
+        "Developmental Testing" in dataframe.value.to_string()
+        for dataframe in facts_tab.dataframe
+    )
+
+    empty_app = render("0603032F", "Air Force")
+    empty_tab = next(
+        tab for tab in empty_app.get("tab") if tab.label == "Plans & Work"
+    )
+    assert any(
+        "not yet been extracted" in caption.value
+        for caption in empty_tab.caption
+    )
+
+    coverage_app = AppTest.from_file(str(app_path), default_timeout=120)
+    coverage_app.query_params["tab"] = "coverage"
+    coverage_app.run()
+    assert not coverage_app.exception
+    coverage_tab = next(
+        tab for tab in coverage_app.get("tab")
+        if tab.label == "Data Coverage"
+    )
+    assert any(
+        "Verified facts:" in caption.value
+        for caption in coverage_tab.caption
+    )
+
+
 def test_configured_demo_allowlist_fails_closed_for_anonymous_user(
     monkeypatch,
 ) -> None:

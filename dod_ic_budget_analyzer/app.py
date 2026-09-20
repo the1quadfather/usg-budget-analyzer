@@ -485,6 +485,16 @@ def fetch_coverage_stats() -> dict:
             "narrative_pes": "SELECT COUNT(DISTINCT pe_number) FROM pe_narratives",
             "narratives": "SELECT COUNT(*) FROM pe_narratives",
             "accomplishments": "SELECT COUNT(*) FROM pe_accomplishments",
+            "narrative_facts": "SELECT COUNT(*) FROM narrative_facts",
+            "fact_extractions": "SELECT COUNT(*) FROM narrative_extractions",
+            "fact_pes": (
+                "SELECT COUNT(DISTINCT pe_number || agency) "
+                "FROM narrative_facts"
+            ),
+            "pe_level_narratives": (
+                "SELECT COUNT(DISTINCT description) FROM pe_narratives "
+                "WHERE project_number = ''"
+            ),
             "execution_rows": "SELECT COUNT(*) FROM pe_execution",
             "execution_fy_min": "SELECT MIN(fy_start) FROM pe_execution",
             "execution_fy_max": "SELECT MAX(fy_start) FROM pe_execution",
@@ -513,6 +523,38 @@ def fetch_coverage_stats() -> dict:
         except Exception:
             stats["narrative_by_agency"] = {}
     return stats
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def fetch_narrative_facts(pe_number: str, agency: str) -> list[dict]:
+    from sqlalchemy import select
+    from storage.db import NarrativeFact, PENarrative
+
+    SessionFactory = init_db_connection()
+    with SessionFactory() as session:
+        rows = session.execute(
+            select(
+                NarrativeFact.fact_type,
+                NarrativeFact.value,
+                NarrativeFact.fiscal_year,
+                NarrativeFact.sentence,
+                PENarrative.source_file,
+                NarrativeFact.char_start,
+                NarrativeFact.char_end,
+            ).join(
+                PENarrative,
+                NarrativeFact.narrative_id == PENarrative.id,
+            ).where(
+                NarrativeFact.narrative_table == "pe_narratives",
+                NarrativeFact.pe_number == pe_number,
+                NarrativeFact.agency == agency,
+            ).order_by(
+                NarrativeFact.fact_type,
+                NarrativeFact.fiscal_year.desc(),
+                NarrativeFact.value,
+            )
+        ).all()
+    return [dict(row._mapping) for row in rows]
 
 
 def _tie_out_table(rows) -> pd.DataFrame:
@@ -1897,6 +1939,74 @@ with tab_finder:
                                 f"…and {len(year_accs) - 12} more line items."
                             )
 
+                    facts = fetch_narrative_facts(
+                        sel["pe_number"], sel["agency"]
+                    )
+                    coverage = fetch_coverage_stats()
+                    if not facts:
+                        st.caption(
+                            "Structured facts have not yet been extracted "
+                            "for this program. Extraction has covered "
+                            f"{coverage['fact_extractions']:,} of "
+                            f"{coverage['pe_level_narratives']:,} "
+                            "program-level narratives so far."
+                        )
+                    else:
+                        with st.expander(
+                            f"Verified facts ({len(facts)}) — extracted from "
+                            "the justification text (inference)"
+                        ):
+                            st.caption(
+                                "Each fact was pulled by the AI extraction "
+                                "job and kept only when its sentence is a "
+                                "verbatim span of the source narrative. "
+                                "Extraction has covered "
+                                f"{coverage['fact_extractions']:,} of "
+                                f"{coverage['pe_level_narratives']:,} "
+                                "program-level narratives so far."
+                            )
+                            fact_types = {
+                                "contractor": "Contractor",
+                                "transition": "Transition",
+                                "test_event": "Test event",
+                                "location": "Location",
+                            }
+                            facts_table = pd.DataFrame([{
+                                "Type": fact_types[fact["fact_type"]],
+                                "Value": fact["value"],
+                                "FY": fact["fiscal_year"],
+                                "Source book": fact["source_file"],
+                            } for fact in facts])
+                            st.dataframe(
+                                facts_table, width="stretch", hide_index=True
+                            )
+                            with st.expander("Source sentences"):
+                                for fact in facts:
+                                    fact_type = fact_types[fact["fact_type"]]
+                                    st.markdown(escape_dollars(
+                                        f"**{fact['value']}** · {fact_type} · "
+                                        f"FY{fact['fiscal_year']}"
+                                    ))
+                                    st.caption(escape_dollars(
+                                        fact["sentence"]
+                                    ))
+                            render_table_downloads(
+                                facts_table,
+                                name=f"{sel['pe_number']}_facts",
+                                key=(f"facts::{sel['pe_number']}::"
+                                     f"{sel['agency']}"),
+                                sources=include_deflator_source(
+                                    fetch_funding_sources(
+                                        pe_numbers=(sel["pe_number"],),
+                                        agencies=(sel["agency"],),
+                                    )
+                                ),
+                            )
+                            st.caption(
+                                "Source books are named in the table; they "
+                                "are not yet registered as source documents."
+                            )
+
             # --- Contracts & Awards ---
             with sub_awards:
                 render_primer("Why awards never tie to the budget figures",
@@ -2719,6 +2829,13 @@ with tab_coverage:
         )
     else:
         st.caption("Procurement coverage: no fiscal years currently ingested.")
+    st.caption(
+        f"Verified facts: {stats['narrative_facts']:,} facts on "
+        f"{stats['fact_pes']:,} programs, from "
+        f"{stats['fact_extractions']:,} of "
+        f"{stats['pe_level_narratives']:,} program-level narratives "
+        "extracted so far."
+    )
     render_primer(
         "How the numbers relate: program elements, projects, request, "
         "authorization, appropriation, execution, and awards",
