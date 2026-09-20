@@ -74,7 +74,8 @@ tab-reordering bug reached `main` — it passed the smoke test and nobody clicke
 | T15b Batch extraction job | shipped | `analysis/narrative_extract.py` + `narrative_extractions` ledger; 50 narratives -> 25 verbatim-verified facts for $0.0396 (thinking capped); archive 15 tables; commits `f23ad7f` + `5f32ac6`, merged as a merge commit after a failed fast-forward |
 | T10b Transition candidates + golden set + eval | shipped | `analysis/transition.py` (NARRATIVE/FUZZY/SEMANTIC + research rule), 20-case golden set, recall@3 16/16, negatives 4/4, 55 ms/query; commit `38ae87a` |
 | T10c Transition panel | shipped | "Did it transition to procurement? (inference)" on Program Finder → Funding, `procurement_sources()` provenance; AppTest covers F-15EX, a research PE, and an empty case; browser-verified; commit `b3d69ba` |
-| T14d | **open** | Thinking budget for `narrative_answer` (spec written 2026-09-19). Roadmap T8–T15 otherwise complete; other follow-ups listed in the T15b, T11c, and T14c specs. |
+| T14d Thinking budget for cited answers | shipped | shared `_generate_with_thinking` helper; `narrative_answer` capped at 1,024 thinking / 2,048 output; live check 464 thinking tokens, $0.0057 vs $0.0135 baseline, 4 cited sentences; commit `1cbd764` |
+| (none) | — | **Every roadmap task T8–T15 plus T14d is shipped as of 2026-09-19.** Remaining follow-ups live in the T15b (accomplishments corpus), T11c (detector false positive), and T15 (facts UI) notes. |
 
 Database ground truth, queried 2026-09-09:
 
