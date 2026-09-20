@@ -76,7 +76,8 @@ tab-reordering bug reached `main` — it passed the smoke test and nobody clicke
 | T10c Transition panel | shipped | "Did it transition to procurement? (inference)" on Program Finder → Funding, `procurement_sources()` provenance; AppTest covers F-15EX, a research PE, and an empty case; browser-verified; commit `b3d69ba` |
 | T14d Thinking budget for cited answers | shipped | shared `_generate_with_thinking` helper; `narrative_answer` capped at 1,024 thinking / 2,048 output; live check 464 thinking tokens, $0.0057 vs $0.0135 baseline, 4 cited sentences; commit `1cbd764` |
 | T15c Verified facts panel | shipped | "Verified facts (N) … (inference)" on Plans & Work with honest coverage (50 of 4,988), Data Coverage caption, three-state AppTest; browser-verified; commit `149c314` |
-| T16a | **open** | Vocabulary, density, and theme pass (Phase H, spec written 2026-09-20). T16b (multipage restructure) to be specced after T16a ships. |
+| T16a Vocabulary, density, theme | shipped | noun titles, 4 badges, 20-word captions, navy theme, tabs Trends/Programs/Rhetoric vs. Budget/Coverage and Funding/Justification/Awards/News; commit `c45517f` (+ prose fix on main) |
+| T16b | **open** | Multipage restructure (Phase H): to be specced after living with T16a. |
 
 Database ground truth, queried 2026-09-09:
 
