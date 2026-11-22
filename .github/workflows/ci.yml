@@ -24,7 +24,35 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
           python -m pip install -r requirements-dev.txt
+      - name: Cache embedding model
+        run: python scripts/cache_model.py
       - name: Run tests
+        env:
+          HF_HUB_OFFLINE: "1"
+          TRANSFORMERS_OFFLINE: "1"
         run: pytest -q
       - name: Check AI governance
         run: python analysis/ai_budget_eval.py
+  container:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build self-contained demo
+        run: docker build -t budget-explorer dod_ic_budget_analyzer
+      - name: Check packaged data and offline retrieval
+        run: |
+          docker run --rm --network none budget-explorer python -c "from analysis.deflators import convert_amount; from analysis.narrative_qa import retrieve; from storage.db import get_engine; assert convert_amount(100, 2025) == 100; assert any(p.pe_number == '0603032F' for p in retrieve('Skyborg autonomous aircraft vanguard program', k=3)); engine = get_engine('sqlite:///data/processed/usg_budgets.db'); connection = engine.raw_connection(); assert connection.execute('SELECT COUNT(*) FROM funding_lines').fetchone()[0] > 0; connection.close(); print('Packaged data and offline retrieval verified.')"
+      - name: Check hosted port and health endpoint
+        run: |
+          docker run -d --name demo -e PORT=8080 -p 127.0.0.1:8080:8080 budget-explorer
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:8080/_stcore/health; then
+              exit 0
+            fi
+            sleep 2
+          done
+          docker logs demo
+          exit 1
+      - name: Container logs
+        if: failure()
+        run: docker logs demo || true
