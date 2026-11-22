@@ -4,10 +4,16 @@ Trace a US defense program from **what was asked for**, to **what Congress
 provided**, to **what the money did**, to **what officials said about it** —
 in one local tool.
 
-The explorer ingests official machine-readable budget data (R-1 exhibits,
-R-2 justification books), links it to execution data (USAspending.gov), and
-layers optional AI enrichment (Gemini with web grounding) for open-source
-context. Everything runs locally against a SQLite database.
+The explorer combines R-1 funding, R-2 justification books, P-1 procurement,
+congressional authorization actions, and DD 1416 budget-authority status in a
+bundled SQLite database. USAspending.gov supplies live award searches; optional
+Gemini features add cited narrative answers and web-grounded context. It can
+run locally or as a hosted Streamlit app.
+
+**Demo status (2026-11-21):** local tests and Docker recovery checks pass.
+The hosted demo is offline and awaits hosting reactivation, redeployment, and
+public verification. Use the local or Docker quickstart in the meantime;
+no restored public URL is claimed.
 
 ## What it does
 
@@ -23,12 +29,36 @@ over titles/acronyms/project names, and semantic embeddings enriched with
 official mission descriptions — with honest ambiguity flagging when several
 programs share a name (joint programs usually do).
 
+### Implemented beyond the core funding views
+
+- Shareable URLs restore the main tab, program, profile tab, trend-year range,
+  and R-1 dollar basis. Tables provide CSV/XLSX downloads with provenance.
+- **Changes between submissions** compares PB vintages and links events to
+  program profiles. A command-line exporter writes JSON; scheduled alerts,
+  email delivery, and saved portfolios are not implemented.
+- **Procurement transition** proposes P-1 matches using narrative evidence,
+  title similarity, and optional semantic matching. These are inferred leads,
+  not an official RDT&E-to-procurement crosswalk.
+- **PE lineage** exposes renumbering and narrative transfer evidence in funding
+  histories, with visible seams and optional possible links.
+- **Ask the justification books** retrieves local R-2 passages without an API
+  key. Optional AI answers require valid passage citations; citation validation
+  checks the quoted text, not whether every interpretation is correct.
+- **Extracted facts** shows source sentences from a resumable batch extraction.
+  The shipped sample contains 25 facts from 50 completed narrative extractions;
+  this is partial coverage, not a full-corpus extraction.
+- **Reconciliation** compares R-1 data with source workbooks and latest DD 1416
+  enacted totals with next-cycle R-1 CY figures. Missing workbooks appear as
+  `no_reference`; this is not a comprehensive audit against appropriations acts.
+- A data dictionary and release-bundle builder are implemented. Publishing a
+  GitHub release remains a separate manual step.
+
 ## Architecture
 
 ```mermaid
 flowchart LR
     subgraph Sources
-        A[comptroller.war.gov<br/>R-1/R-2 + DD 1416 XLSX]
+        A[comptroller.war.gov<br/>R-1/R-2 + P-1 + DD 1416]
         B[USAspending.gov API]
         C[Gemini + web search<br/>optional]
     end
@@ -56,6 +86,7 @@ Requires Python 3.12+.
 cd dod_ic_budget_analyzer
 pip install torch --index-url https://download.pytorch.org/whl/cpu   # do this first
 pip install -r requirements.txt
+python scripts/cache_model.py
 streamlit run app.py
 ```
 
@@ -74,9 +105,16 @@ both chambers. It also includes 79,677 reconciled DD 1416 execution rows from
 The database ships **compressed** as `usg_budgets.db.gz` (about 41 MB) because
 the roughly 166 MB
 raw is past GitHub's per-file limit. It expands itself the first time anything
-opens it — no setup step — and the expanded file is gitignored. The first
-Program Finder search downloads the sentence-transformer model (one time,
-~90MB); its embeddings are prebuilt and shipped.
+opens it — no setup step — and the expanded file is gitignored. Run
+`scripts/cache_model.py` once with network access to download the embedding
+model and verify local encoding before a demo or test run. Corpus retrieval
+deliberately loads only cached weights; prebuilt indexes alone are not enough.
+Docker performs this preparation during its build.
+
+The shipped database also includes 5,253 P-1 procurement observations
+(FY2024–FY2027, from PB2026 and PB2027) and 405 PE lineage records. These counts
+were checked against the bundled data on 2026-11-21; they do not imply uniform
+coverage across years or components.
 
 ### Optional: AI features
 
@@ -151,9 +189,12 @@ python analysis/ai_precompute.py --limit 20             # warm it
 
 ## Quickstart (Streamlit Community Cloud)
 
-The public demo runs this way with no infrastructure: deploy straight from
-this repository with main file `dod_ic_budget_analyzer/app.py`. Two things are
-specific to the hosted app:
+Community Cloud can deploy directly from this repository with main file
+`dod_ic_budget_analyzer/app.py`. A live deployment is not currently verified.
+On a fresh instance, the program matcher can download the model; the corpus
+search loader invokes it before attempting local retrieval. A no-network
+deployment must provision the model cache in advance (use the Docker build).
+Two things are specific to the hosted app:
 
 - `.streamlit/config.toml` at the repository root turns the source-file
   watcher off. On a deployment the code only changes on redeploy, and with the
@@ -200,8 +241,9 @@ Then open http://localhost:8501. The compose file mounts `./data` so the
 database persists outside the container, passes `GEMINI_API_KEY` through from
 your environment, and caches the embedding model in a named volume.
 
-The image is **self-contained** — it carries the compressed database and the
-prebuilt embeddings, so it also runs with no checkout and no volume:
+The image is **self-contained** — it carries the compressed database, program
+embeddings, narrative passage index, deflator CSV, and downloaded model weights.
+It also runs with no checkout and no volume:
 
 ```bash
 docker build -t budget-explorer . && docker run -p 8501:8501 budget-explorer
@@ -209,6 +251,51 @@ docker build -t budget-explorer . && docker run -p 8501:8501 budget-explorer
 
 Under compose the mounted `./data` shadows the copies baked into the image,
 which is what you want for local development.
+
+### Railway recovery configuration
+
+For the existing service, select this repository and use
+`/dod_ic_budget_analyzer` as the **Root Directory**, so its Dockerfile and build
+context agree. Use the Dockerfile's start command; remove any older custom start
+command that overrides it. The command listens on Railway's `PORT` (8501 when
+unset), and binds to `0.0.0.0`.
+
+Set the service healthcheck path to `/_stcore/health`, and make sure the public
+domain targets the same listening port. A successful healthcheck confirms the
+server is listening; also exercise Trends, constant dollars, a program profile,
+and corpus retrieval after deployment. See Railway's
+[Dockerfile detection](https://docs.railway.com/builds/dockerfiles) and
+[healthcheck port behavior](https://docs.railway.com/deployments/healthchecks).
+
+Keep Gemini credentials out of a public demo. The Docker image disables runtime
+model downloads and the Streamlit source watcher. Docker Compose mounts its
+model-cache volume over the baked cache. To populate an existing empty/stale
+cache volume, run this network-enabled setup command before starting the service:
+
+```bash
+docker compose run --rm -e HF_HUB_OFFLINE=0 -e TRANSFORMERS_OFFLINE=0 budget-explorer python scripts/cache_model.py
+```
+
+It needs no API key.
+
+## Verification
+
+From `dod_ic_budget_analyzer/`, after installing `requirements-dev.txt`:
+
+```bash
+python scripts/cache_model.py       # network-enabled setup, no API key
+python -m pytest -q
+python analysis/ai_budget_eval.py
+python analysis/narrative_qa_eval.py
+```
+
+CI prepares the model explicitly, then runs pytest with `HF_HUB_OFFLINE=1` and
+`TRANSFORMERS_OFFLINE=1`. It also builds the Docker image, checks its data and
+retrieval with container networking disabled, and tests startup on `PORT=8080`.
+No paid AI call is required. The local recovery check on 2026-11-21 passed
+97 tests, 64/64 AI governance checks, and 5/5 gated narrative retrieval cases.
+The additional regression test covers the constant-dollar toggle and permalink;
+fiscal years must be numeric before applying the deflator.
 
 ## Updating the data
 
@@ -333,6 +420,10 @@ commands.
   aren't a searchable instrument group; DoD awards post with a ~90-day
   delay; umbrella vehicles (PIAs, IDIQs) hide task detail in generic prime
   descriptions (a subaward search partially compensates).
+- **Change-feed interpretation**: absence from a newer submission is currently
+  labeled a termination; a newly observed PE is labeled a new start.
+  Renumbering, transfers, and coverage gaps can produce these events. Review
+  lineage and source evidence before treating them as confirmed decisions.
 - **AI enrichment**: clearly labeled as AI estimates. The Rhetoric vs.
   Budget signal is an LLM characterization grounded in web search, not a
   media-analytics count; its alignment coefficient is a Spearman rank
@@ -355,9 +446,11 @@ dod_ic_budget_analyzer/
 └── app.py           # Streamlit UI
 ```
 
-## Near-term roadmap
+## Next work
 
-- Reconcile R-1 and DD 1416 totals against published appropriation toplines
-- Add procurement P-1 ingestion and evidence-backed RDT&E transition leads
-- Track PE renumbering, splits, merges, and transfers across budget cycles
-- Publish versioned bulk-data releases and a PE-level change feed
+See [ROADMAP.md](ROADMAP.md) for implemented capabilities, remaining limits,
+and proposed next steps: hosted-demo verification, safer change classifications,
+saved portfolios, briefing exports, and a measured management pilot. P-1 ingest,
+lineage, reconciliation, cited retrieval, JSON change export, and the release
+builder are already implemented; extending their coverage and operating them
+reliably is distinct from building them for the first time.
