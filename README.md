@@ -46,6 +46,17 @@ programs share a name (joint programs usually do).
   evidence of cancellation. Download a JSON backup to restore on another device;
   clearing browser data removes local saves. This is not an account-based sync
   service or a scheduled notification system.
+- **Executive briefing PDF** exports a saved portfolio or watchlist with an
+  executive overview, component request chart, analyst-supplied decision/notes,
+  every selected program, and a dated method/source appendix. In Programs, open
+  **Portfolios & watchlists**, save the collection, then expand **Executive
+  briefing PDF** and choose **Generate briefing PDF**. The change metric uses
+  only programs observed in both submissions; covered totals disclose their
+  coverage. The export uses existing dependencies and no paid AI. PDFs are
+  generated per-session; saved notes stay in the browser. Neither is written to
+  the shared database. Downloaded PDFs
+  are fixed snapshots; JSON backups preserve selections, not historical data.
+  Editable PowerPoint and scheduled briefing delivery remain future work.
 - **Procurement transition** proposes P-1 matches using narrative evidence,
   title similarity, and optional semantic matching. These are inferred leads,
   not an official RDT&E-to-procurement crosswalk.
@@ -62,6 +73,21 @@ programs share a name (joint programs usually do).
   `no_reference`; this is not a comprehensive audit against appropriations acts.
 - A data dictionary and release-bundle builder are implemented. Publishing a
   GitHub release remains a separate manual step.
+
+### Prepare a management briefing
+
+1. In Programs, create a named portfolio and select the relevant PE/component
+   pairs. Save a baseline, comparison submission and dollar basis.
+2. Record the scope and caveats in analyst notes. Clone a watchlist if useful;
+   review its flags against source documents before drawing conclusions.
+3. Open Executive briefing PDF, enter the audience and discussion requested,
+   generate the report, and review the coverage counts and program table.
+4. Download the PDF for the meeting and a separate JSON backup for continued
+   work. Collection backups include your notes; share them intentionally.
+
+The PDF covers annual discretionary requests. Use the existing Funding and
+execution views to investigate enacted amounts, reprogramming or net current
+program; those stages are not rolled into this first executive export.
 
 ## Architecture
 
@@ -309,6 +335,13 @@ checks passed on GitHub for the merged recovery and CPU-install revisions.
 The additional regression test covers the constant-dollar toggle and permalink;
 fiscal years must be numeric before applying the deflator.
 
+The portfolios/watchlists and executive PDF work was checked on 2026-11-22:
+`python -m pytest -q --tb=short` passed **119 tests**. Real-browser checks covered
+collection creation, watchlist cloning, persistence across reload, JSON backup
+download, and PDF generation/download. Every page of the downloaded four-page
+briefing was rendered and visually reviewed. The automated restore flow passes;
+the in-app browser's file-picker automation could not complete an actual upload.
+
 ## Updating the data
 
 New budget cycle? Three commands:
@@ -462,8 +495,8 @@ dod_ic_budget_analyzer/
 
 See [ROADMAP.md](ROADMAP.md) for implemented capabilities, remaining limits,
 and proposed next steps: repeatable demo operations, safer change classifications,
-briefing exports, shared portfolio workflows, and a measured management pilot. Saved
-browser portfolios and watchlists are implemented. P-1 ingest,
+shared portfolio workflows, editable briefings, and a measured management pilot.
+Saved browser portfolios, watchlists, and executive PDF exports are implemented. P-1 ingest,
 lineage, reconciliation, cited retrieval, JSON change export, and the release
 builder are already implemented; extending their coverage and operating them
 reliably is distinct from building them for the first time.
