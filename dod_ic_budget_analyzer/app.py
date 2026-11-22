@@ -924,9 +924,11 @@ def render_saved_collections() -> None:
             st.caption("Restore a Budget Explorer JSON backup up to 1 MB. This replaces all saved collections in this browser.")
             uploaded = st.file_uploader("Restore a saved-work backup", type=["json"], key="collection_import")
             replace = st.checkbox("Replace this browser's saved collections with the backup", key="collection_replace")
-            restore = st.form_submit_button("Restore backup", disabled=not ready or not replace or uploaded is None)
+            restore = st.form_submit_button("Restore backup", disabled=not ready)
         if restore:
             try:
+                if uploaded is None or not replace:
+                    raise ValueError("Choose a backup and confirm replacement before restoring.")
                 if uploaded.size > portfolios.MAX_BACKUP_BYTES:
                     raise ValueError("Choose a backup smaller than 1 MB.")
                 uploaded.seek(0)
