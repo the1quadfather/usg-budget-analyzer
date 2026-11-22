@@ -10,10 +10,12 @@ bundled SQLite database. USAspending.gov supplies live award searches; optional
 Gemini features add cited narrative answers and web-grounded context. It can
 run locally or as a hosted Streamlit app.
 
-**Demo status (2026-11-21):** local tests and Docker recovery checks pass.
-The hosted demo is offline and awaits hosting reactivation, redeployment, and
-public verification. Use the local or Docker quickstart in the meantime;
-no restored public URL is claimed.
+**[Open the free live demo](https://usg-budget-analyzer-mlwcj2nxr2lsg7ppbggg9p.streamlit.app/)**
+— Streamlit Community Cloud, connected to `main`, running Python 3.12.
+Verified on 2026-11-21: health endpoint, constant-dollar chart, program funding
+and execution, and cited narrative retrieval. Paid AI features are disabled.
+If the app is asleep, choose **Yes, get this app back up!** and allow startup
+to finish. Railway is an optional deployment path, not required for this demo.
 
 ## What it does
 
@@ -84,16 +86,15 @@ Requires Python 3.12+.
 
 ```bash
 cd dod_ic_budget_analyzer
-pip install torch --index-url https://download.pytorch.org/whl/cpu   # do this first
 pip install -r requirements.txt
 python scripts/cache_model.py
 streamlit run app.py
 ```
 
-**Install CPU torch first.** The default PyPI wheel is the CUDA build — several
-gigabytes — and nothing here needs a GPU. Installing it first means the rest of
-the requirements see torch as already satisfied. (The Dockerfile does this for
-you.)
+The requirements select `torch==2.15.0+cpu` from the official PyTorch CPU index
+on Linux and Windows, so direct installs on free hosts do not pull unused CUDA
+packages. Other platforms use their native torch distribution. Docker and CI
+install this same manifest and check that CUDA is absent.
 
 The repository ships with the processed database, so the app is useful
 immediately: FY1996–FY2027 R-1 funding, R-2 mission narratives for 1,383 of
@@ -189,8 +190,8 @@ python analysis/ai_precompute.py --limit 20             # warm it
 
 ## Quickstart (Streamlit Community Cloud)
 
-Community Cloud can deploy directly from this repository with main file
-`dod_ic_budget_analyzer/app.py`. A live deployment is not currently verified.
+The free live demo deploys directly from this repository's `main` branch with
+main file `dod_ic_budget_analyzer/app.py` and Python 3.12 selected in app settings.
 On a fresh instance, the program matcher can download the model; the corpus
 search loader invokes it before attempting local retrieval. A no-network
 deployment must provision the model cache in advance (use the Docker build).
@@ -208,8 +209,9 @@ Two things are specific to the hosted app:
   named viewers (or add an OIDC allowlist), add the key under Settings →
   Secrets, and **Reboot** the app. `.streamlit/secrets.toml` is gitignored.
 
-Community Cloud apps get roughly 1 GB of RAM; this one settles around 550–600 MB
-once the matching model has loaded.
+The free app can sleep after inactivity. Open it and exercise a program search
+and a corpus question before a presentation so startup and model loading finish
+before the audience arrives.
 
 For an application-level allowlist, configure Streamlit OIDC in the app's
 Secrets and add the permitted addresses. The gate executes before the database
@@ -252,9 +254,9 @@ docker build -t budget-explorer . && docker run -p 8501:8501 budget-explorer
 Under compose the mounted `./data` shadows the copies baked into the image,
 which is what you want for local development.
 
-### Railway recovery configuration
+### Optional Railway configuration
 
-For the existing service, select this repository and use
+For a Railway deployment, select this repository and use
 `/dod_ic_budget_analyzer` as the **Root Directory**, so its Dockerfile and build
 context agree. Use the Dockerfile's start command; remove any older custom start
 command that overrides it. The command listens on Railway's `PORT` (8501 when
@@ -294,6 +296,8 @@ CI prepares the model explicitly, then runs pytest with `HF_HUB_OFFLINE=1` and
 retrieval with container networking disabled, and tests startup on `PORT=8080`.
 No paid AI call is required. The local recovery check on 2026-11-21 passed
 97 tests, 64/64 AI governance checks, and 5/5 gated narrative retrieval cases.
+The program-linker evaluation also passed 11/11. Linux tests and Docker smoke
+checks passed on GitHub for the merged recovery and CPU-install revisions.
 The additional regression test covers the constant-dollar toggle and permalink;
 fiscal years must be numeric before applying the deflator.
 
@@ -449,7 +453,7 @@ dod_ic_budget_analyzer/
 ## Next work
 
 See [ROADMAP.md](ROADMAP.md) for implemented capabilities, remaining limits,
-and proposed next steps: hosted-demo verification, safer change classifications,
+and proposed next steps: repeatable demo operations, safer change classifications,
 saved portfolios, briefing exports, and a measured management pilot. P-1 ingest,
 lineage, reconciliation, cited retrieval, JSON change export, and the release
 builder are already implemented; extending their coverage and operating them

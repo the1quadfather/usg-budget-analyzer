@@ -40,7 +40,9 @@ Recovery changes implemented: an explicit model-cache preparation command;
 offline pytest execution after preparation; model weights baked into Docker;
 the narrative index and deflator CSV included in the image; startup and Docker
 healthchecks using the hosting platform's `PORT`; and a CI container smoke
-check for packaged data, offline retrieval, and a non-default port.
+check for packaged data, offline retrieval, and a non-default port. Direct
+Linux/Windows installs also select the verified CPU torch build, so free hosts
+do not pull several GB of unused CUDA dependencies.
 
 The original failure reproduced as 2 failed / 94 passed with an empty model
 cache. After preparation, the local run passed 96/96 tests, 64/64 AI governance
@@ -50,23 +52,26 @@ them before applying deflators and adding a toggle/permalink regression test
 brought the final local suite to 97/97. No tests were removed or
 relaxed to obtain that result.
 
-Linux tests and the container smoke checks passed on the recovery branch.
-Remaining deployment work: reactivate hosting, deploy the tested revision, and
-record a confirmed public URL. Signed-in inspection on 2026-11-21 confirmed
-that the hosted service is offline and requires owner reactivation before
-deploying. The existing root directory is correctly set to
-`/dod_ic_budget_analyzer`, and production tracks `main`. Local/container success
-does not verify the hosted service. Account-specific reactivation details are
-kept outside the public repository.
+Linux tests and container checks passed for the merged recovery and CPU-install
+revisions. The existing free **[Streamlit Community Cloud demo](https://usg-budget-analyzer-mlwcj2nxr2lsg7ppbggg9p.streamlit.app/)**
+was woken, configured for Python 3.12, and rebooted from `main`. Verification on
+2026-11-21 confirmed `200 ok` from its app health endpoint, constant-dollar
+charts, PE 0601102A funding/execution, and cited Skyborg passages from a corpus
+question before any program search. The News panel confirms no Gemini API key
+is configured, so paid AI features are disabled. The program-linker evaluation
+also passed 11/11 locally.
 
-Acceptance for hosted recovery:
+Recovery changes are merged in PRs #1 and #3. The demo follows `main`; those
+merge revisions are `8d02192` (recovery) and `a48f1c5` (CPU install). Railway
+remains an optional deployment target and is not required for the free demo.
 
-- Record the deployed revision and confirm the public health endpoint returns 200.
-- Exercise Trends, constant dollars, a program profile, and a corpus question
-  in a real browser, including on a fresh deployment before any visitor search.
-- Name a deployment owner and document configuration and rollback revision.
-- Omit paid AI keys from public instances; configure access controls and retain
-  existing spend limits for private AI demonstrations.
+Remaining operations work:
+
+- Name an ongoing deployment owner and document the rollback procedure.
+- Rehearse a program search and corpus query before presentations; free apps
+  sleep after inactivity and model loading adds startup time.
+- Keep paid AI keys out of public deployments. Configure identity and retain
+  existing spend limits for any private AI demonstrations.
 
 ## 2. Strengthen interpretation before management use
 
