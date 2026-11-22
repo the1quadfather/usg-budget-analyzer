@@ -49,6 +49,24 @@ def test_default_page_renders_data_not_just_imports() -> None:
     )
 
 
+def test_constant_dollars_toggle_and_permalink_render_without_errors() -> None:
+    app_path = Path(__file__).parents[1] / "app.py"
+    app = AppTest.from_file(str(app_path), default_timeout=30).run()
+    app.radio(key="dollar_basis").set_value("Constant FY2025").run()
+
+    assert not app.exception
+    assert len(app.get("vega_lite_chart")) >= 1
+    assert app.query_params["dollars"] == "constant-2025"
+
+    linked = AppTest.from_file(str(app_path), default_timeout=30)
+    linked.query_params["dollars"] = "constant-2025"
+    linked.run()
+
+    assert not linked.exception
+    assert linked.radio(key="dollar_basis").value == "Constant FY2025"
+    assert len(linked.get("vega_lite_chart")) >= 1
+
+
 def test_program_finder_rerun_keeps_tab_content_mapped(monkeypatch) -> None:
     """A search rerun must not reorder index-keyed frontend tab panels."""
     monkeypatch.setenv("HF_HUB_OFFLINE", "1")

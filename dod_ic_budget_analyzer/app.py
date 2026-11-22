@@ -911,13 +911,13 @@ with tab_trends:
             id_vars=["agency"], value_vars=year_cols,
             var_name="fiscal_year", value_name="amount_k",
         )
+        long["fiscal_year"] = long["fiscal_year"].astype(int)
         if constant_dollars:
             from analysis.deflators import apply_deflator
             long["amount_k"] = apply_deflator(
                 long, amount_column="amount_k"
             )
         long["amount_b"] = long["amount_k"] / 1e6
-        long["fiscal_year"] = long["fiscal_year"].astype(int)
         long = long[long["amount_b"] > 0]
 
         trend_chart = (
