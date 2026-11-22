@@ -1,10 +1,12 @@
-# Everything under data/ is excluded, then the two runtime artifacts are added
+# Everything under data/ is excluded, then the required runtime artifacts are added
 # back. The image is therefore self-contained: `docker run` works with no
 # volume and no checkout. docker-compose still mounts ./data over the top,
 # which shadows these with the host's copies for local development.
 data/
 !data/processed/usg_budgets.db.gz
 !data/processed/semantic_embeddings_*.pt
+!data/processed/narrative_index_*.pt
+!data/processed/rdte_deflators_fy2025.csv
 
 # The expanded database is derived from the .gz at runtime -- never ship it,
 # it is ~124 MB and would defeat the point of compressing it.
@@ -16,5 +18,7 @@ __pycache__/
 notebooks/
 .env
 .env.*
+.hf-cache/
+.streamlit/secrets.toml
 Dockerfile
 docker-compose.yaml
