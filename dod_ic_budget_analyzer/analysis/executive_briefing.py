@@ -252,7 +252,10 @@ def export_pdf(snapshot: PortfolioSnapshot, *, title: str,
         if not snapshot.sources:
             appendix.append("No source observations were found for these selected programs and cycles.")
         for i, source in enumerate(snapshot.sources, 1):
-            appendix.append(f"[{i}] {source.get('filename', 'Source')} | {source.get('document_type', '')} | publication FY {source.get('publication_year') or 'not recorded'}")
+            year = source.get("publication_year")
+            cycle = (f"PB{year}" if year and source.get("document_type") in {"R1", "P1"}
+                     else f"Reference year: {year or 'not recorded'}")
+            appendix.append(f"[{i}] {source.get('filename', 'Source')} | {source.get('document_type', '')} | {cycle}")
             appendix.append(f"Retrieved: {source.get('retrieved_at') or 'not recorded'} | processed: {source.get('processed_date') or 'not recorded'}")
             appendix.append(source.get("source_url") or "Source URL not recorded in the archive.")
             appendix.append("")

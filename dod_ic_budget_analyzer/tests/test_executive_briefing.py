@@ -51,6 +51,8 @@ def test_pdf_preserves_scope_math_missing_values_notes_sources_and_metadata():
         assert "review $5M and $10M; café" in text
         assert "analyst-provided" in text
         assert "example.gov/budget/r1.xlsx" in text
+        assert "R1 | PB2027" in text
+        assert "publication FY" not in text  # archive field records a submission cycle
         assert "not enacted appropriations" in " ".join(text.split())
         assert "2026-11-22 18:30 UTC" in text
         assert ARCHIVE in text
