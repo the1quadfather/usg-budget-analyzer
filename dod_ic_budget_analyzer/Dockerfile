@@ -8,11 +8,11 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-# CPU-only torch first (the default CUDA wheels add ~5GB for nothing here),
-# then the rest of the requirements see torch as satisfied.
+# The manifest selects CPU-only torch, including on hosts that install it
+# directly rather than building this image.
 COPY requirements.txt .
-RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu \
-    && pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt \
+    && python -c "import torch; assert torch.version.cuda is None"
 
 COPY . .
 
