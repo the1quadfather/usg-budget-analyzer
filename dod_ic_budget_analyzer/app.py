@@ -21,6 +21,7 @@ import hashlib
 import os
 from pathlib import Path
 from urllib.parse import quote
+from uuid import uuid4
 
 import altair as alt
 import pandas as pd
@@ -41,7 +42,7 @@ from analysis.provenance import (
 )
 from analysis.trend_tracker import LINEAGE_CONFIDENCE_THRESHOLD, TrendTracker
 from analysis.text_render import escape_dollars
-from analysis import narrative_qa, primer
+from analysis import narrative_qa, portfolios, primer
 from analysis.user_identity import streamlit_user_id
 
 # --- Configuration & State Setup ---
@@ -709,6 +710,261 @@ def render_table_downloads(
         key=f"xlsx::{key}",
     )
 
+@st.cache_resource
+def _collection_store_renderer():
+    return st.components.v2.component(
+        "budget_explorer_collection_store",
+        html='<span role="status" aria-live="polite"></span>',
+        css="span {font: 0.9rem sans-serif; color: var(--st-text-color);}",
+        js=(Path(__file__).parent / "assets" / "portfolio_store.js").read_text(encoding="utf-8"),
+    )
+
+
+def _collection_store_sync() -> None:
+    if "_collection_workspace" not in st.session_state:
+        st.session_state["_collection_workspace"] = portfolios.new_workspace()
+    if "_collection_command" not in st.session_state:
+        st.session_state["_collection_command"] = {"id": uuid4().hex, "action": "load"}
+    command = st.session_state["_collection_command"]
+    result = _collection_store_renderer()(
+        data=command, key="collection_browser_store", on_response_change=lambda: None,
+    )
+    response = result.get("response")
+    if (not isinstance(response, dict) or response.get("id") != command["id"]
+            or st.session_state.get("_collection_ack") == command["id"]):
+        return
+    st.session_state["_collection_ack"] = command["id"]
+    status = response.get("status")
+    st.session_state["_collection_sync_status"] = status
+    st.session_state["_collections_ready"] = True
+    if status == "loaded":
+        try:
+            raw = response.get("payload")
+            workspace = portfolios.load_workspace(raw) if raw else portfolios.new_workspace()
+            st.session_state["_collection_workspace"] = workspace
+            st.session_state["_collection_saved_revision"] = workspace["revision"] if raw else None
+            st.session_state.pop("_collection_restore_error", None)
+        except ValueError as exc:
+            st.session_state["_collection_restore_error"] = str(exc)
+    elif status == "saved":
+        st.session_state["_collection_saved_revision"] = st.session_state["_collection_workspace"]["revision"]
+        st.session_state.pop("_collection_restore_error", None)
+
+
+def _queue_collection_save(workspace: dict, *, selected: str | None = None,
+                           replace: bool = False) -> None:
+    payload = portfolios.dump_workspace(workspace).decode("utf-8")
+    st.session_state["_collection_workspace"] = workspace
+    st.session_state["_collection_command"] = {
+        "id": uuid4().hex, "action": "save", "payload": payload,
+        "expected_revision": st.session_state.get("_collection_saved_revision"),
+        "replace": replace,
+    }
+    st.session_state["_collection_sync_status"] = "pending"
+    st.session_state["_collection_next_pick"] = selected
+    st.rerun()
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _collection_catalog():
+    with init_db_connection()() as session:
+        return portfolios.program_catalog(session), portfolios.request_cycles(session)
+
+
+def _collection_table(snapshot, *, flagged_only: bool, key: str) -> None:
+    table = portfolios.comparison_table(snapshot, flagged_only=flagged_only)
+    if table.empty:
+        st.info("No request movements meet these watch rules.")
+        return
+    display = table.copy()
+    display["Open program"] = [
+        _finder_permalink(row.pe_number, row.agency)
+        for row in (snapshot.flagged if flagged_only else snapshot.rows).itertuples()
+    ]
+    st.dataframe(display, hide_index=True, width="stretch", column_config={
+        "Open program": st.column_config.LinkColumn(display_text="Open"),
+    })
+    render_table_downloads(table, name="collection_requests", key=key, sources=snapshot.sources)
+
+
+def render_saved_collections() -> None:
+    _collection_store_sync()
+    workspace = st.session_state["_collection_workspace"]
+    ready = st.session_state.get("_collections_ready", False)
+    status = st.session_state.get("_collection_sync_status")
+    with st.expander("Portfolios & watchlists", expanded=False):
+        st.caption("Saved in this browser. Download a backup to move devices or recover after clearing browser data.")
+        if not ready:
+            st.caption("Loading saved work from this browser...")
+        if status == "conflict":
+            st.warning("Another tab changed your saved work. Back up this session, then reload before editing further.")
+        elif status == "unavailable":
+            st.warning("Browser saving is unavailable. Changes last for this session only; download a backup before leaving.")
+        elif status == "pending":
+            st.caption("Saving in this browser...")
+        if st.session_state.get("_collection_restore_error"):
+            st.error("Saved work could not be opened: " + st.session_state["_collection_restore_error"])
+        if ready and st.button("Reload saved work", key="collections_reload"):
+            st.session_state["_collection_command"] = {"id": uuid4().hex, "action": "load"}
+            st.session_state["_collections_ready"] = False
+            st.rerun()
+        editable = (ready and status not in {"pending", "conflict"}
+                    and not st.session_state.get("_collection_restore_error"))
+        catalog, cycles = _collection_catalog()
+        with st.form("create_collection"):
+            name = st.text_input("Collection name", max_chars=80, key="new_collection_name")
+            kind = st.selectbox("Collection type", ["Portfolio", "Watchlist"], key="new_collection_kind")
+            create = st.form_submit_button("Create collection", disabled=not editable or len(cycles) < 2)
+        if create:
+            try:
+                updated = portfolios.save_collection(
+                    workspace, name=name, kind=kind.lower(), settings=portfolios.default_settings(cycles),
+                )
+                _queue_collection_save(updated, selected=updated["collections"][-1]["id"])
+            except ValueError as exc:
+                st.error(str(exc))
+
+        items = {item["id"]: item for item in workspace["collections"]}
+        if items:
+            desired = st.session_state.pop("_collection_next_pick", None)
+            if desired in items:
+                st.session_state["collection_pick"] = desired
+            if st.session_state.get("collection_pick") not in items:
+                st.session_state["collection_pick"] = next(iter(items))
+            picked = st.selectbox(
+                "Saved collection", list(items), key="collection_pick",
+                format_func=lambda ident: f"{items[ident]['name']} ({items[ident]['kind']})",
+            )
+            item = items[picked]
+            prefix = f"collection::{picked}::{workspace['revision']}"
+            settings = item["settings"]
+            options = sorted(set(catalog) | {(m["pe_number"], m["agency"]) for m in item["members"]})
+            with st.form(f"edit::{prefix}"):
+                edit_name = st.text_input("Name", item["name"], max_chars=80, key=f"name::{prefix}")
+                members = st.multiselect(
+                    "Programs in this collection", options,
+                    default=[(m["pe_number"], m["agency"]) for m in item["members"]],
+                    format_func=lambda pair: f"{pair[0]} - {catalog.get(pair, 'Not in this data release')} [{pair[1]}]",
+                    max_selections=portfolios.MAX_MEMBERS, key=f"members::{prefix}",
+                )
+                notes = st.text_area("Analyst notes", item["notes"], max_chars=3000, key=f"notes::{prefix}")
+                a, b = st.columns(2)
+                old_options = sorted(set(cycles[:-1]) | {settings["older_pb"]})
+                older = a.selectbox("Baseline request (PB)", old_options,
+                                    index=old_options.index(settings["older_pb"]), key=f"old::{prefix}")
+                new_options = sorted({year for year in cycles if year > older} | {settings["newer_pb"]})
+                newer = b.selectbox("Comparison request (PB)", new_options,
+                                    index=new_options.index(settings["newer_pb"]), key=f"new::{prefix}")
+                basis = st.selectbox("Saved comparison dollar basis", ["then-year", "constant-2025"],
+                                     index=0 if settings["basis"] == "then-year" else 1,
+                                     format_func=lambda value: "Then-year" if value == "then-year" else "Constant FY2025",
+                                     key=f"basis::{prefix}")
+                a, b = st.columns(2)
+                minimum_m = a.number_input("Minimum change ($M)", min_value=0.0, max_value=1_000_000.0,
+                                            value=float(settings["min_change_m"]), key=f"amount::{prefix}")
+                minimum_pct = b.number_input("Minimum change (%)", min_value=0.0, max_value=1_000_000.0,
+                                              value=float(settings["min_change_pct"]), key=f"pct::{prefix}")
+                include_presence = st.checkbox("Flag newly observed, missing, or changed-from-zero requests",
+                                                value=settings["include_presence"], key=f"presence::{prefix}")
+                st.caption("A comparable movement must meet both limits. Presence changes use the checkbox above.")
+                saved = st.form_submit_button("Save collection", disabled=not editable)
+            if saved:
+                try:
+                    updated = portfolios.save_collection(
+                        workspace, collection_id=picked, name=edit_name, kind=item["kind"], notes=notes,
+                        members=[{"pe_number": pe, "agency": agency} for pe, agency in members],
+                        settings={"older_pb": older, "newer_pb": newer, "basis": basis,
+                                  "min_change_m": minimum_m, "min_change_pct": minimum_pct,
+                                  "include_presence": include_presence},
+                    )
+                    _queue_collection_save(updated, selected=picked)
+                except ValueError as exc:
+                    st.error(str(exc))
+            st.caption(
+                f"Saved view: PB{settings['older_pb']} FY{settings['older_pb']} request to "
+                f"PB{settings['newer_pb']} FY{settings['newer_pb']} request; "
+                + ("constant FY2025 dollars." if settings["basis"] == "constant-2025" else "then-year dollars.")
+            )
+            st.caption("Discretionary budget-year requests only. Missing observations do not establish a start, transfer, or cancellation.")
+            if item["members"]:
+                with init_db_connection()() as session:
+                    snapshot = portfolios.build_snapshot(session, item)
+                current = snapshot.rows["after_k"].sum(min_count=1)
+                a, b, c = st.columns(3)
+                a.metric("Programs", len(item["members"]))
+                b.metric("Covered comparison request", "—" if pd.isna(current) else f"${current / 1000:,.1f}M")
+                c.metric("Review flags", len(snapshot.flagged))
+                st.caption(f"Comparison coverage: {snapshot.rows['after_k'].notna().sum()} of {len(item['members'])} programs.")
+                if item["kind"] == "watchlist":
+                    _collection_table(snapshot, flagged_only=True, key=f"watch::{picked}")
+                    with st.expander("All watched programs"):
+                        _collection_table(snapshot, flagged_only=False, key=f"watch-all::{picked}")
+                else:
+                    _collection_table(snapshot, flagged_only=False, key=f"portfolio::{picked}")
+                render_provenance(snapshot.sources)
+            else:
+                st.info("Add programs above or save a program from its profile.")
+            if item["kind"] == "portfolio" and st.button("Create watchlist from portfolio", disabled=not editable):
+                base = item["name"][:60] + " watchlist"
+                clone_name, suffix = base, 2
+                while clone_name.casefold() in {c["name"].casefold() for c in items.values()}:
+                    clone_name, suffix = f"{base} {suffix}", suffix + 1
+                updated = portfolios.save_collection(workspace, name=clone_name, kind="watchlist",
+                                                       settings=settings, notes=item["notes"], members=item["members"])
+                _queue_collection_save(updated, selected=updated["collections"][-1]["id"])
+            with st.expander("Remove collection"):
+                confirmed = st.checkbox("Remove this collection from my saved work", key=f"remove-check::{picked}")
+                if st.button("Remove collection", disabled=not editable or not confirmed, key=f"remove::{picked}"):
+                    _queue_collection_save(portfolios.remove_collection(workspace, picked))
+
+        st.divider()
+        st.download_button("Download saved-work backup", portfolios.dump_workspace(workspace),
+                           file_name="budget-explorer-collections.json", mime="application/json", key="collection_backup")
+        with st.form("restore_collections"):
+            st.caption("Restore a Budget Explorer JSON backup up to 1 MB. This replaces all saved collections in this browser.")
+            uploaded = st.file_uploader("Restore a saved-work backup", type=["json"], key="collection_import")
+            replace = st.checkbox("Replace this browser's saved collections with the backup", key="collection_replace")
+            restore = st.form_submit_button("Restore backup", disabled=not ready)
+        if restore:
+            try:
+                if uploaded is None or not replace:
+                    raise ValueError("Choose a backup and confirm replacement before restoring.")
+                if uploaded.size > portfolios.MAX_BACKUP_BYTES:
+                    raise ValueError("Choose a backup smaller than 1 MB.")
+                uploaded.seek(0)
+                restored = portfolios.load_workspace(uploaded.read(portfolios.MAX_BACKUP_BYTES + 1))
+                _queue_collection_save(restored, replace=True)
+            except ValueError as exc:
+                st.error(str(exc))
+
+
+def render_save_program(program: dict) -> None:
+    workspace = st.session_state["_collection_workspace"]
+    if not workspace["collections"]:
+        st.caption("Create a portfolio or watchlist above to save this program.")
+        return
+    with st.popover("Save to portfolio or watchlist"):
+        items = {item["id"]: item for item in workspace["collections"]}
+        picked = st.selectbox("Save program to", list(items), format_func=lambda ident: items[ident]["name"], key="save_program_collection")
+        disabled = (not st.session_state.get("_collections_ready")
+                    or bool(st.session_state.get("_collection_restore_error"))
+                    or st.session_state.get("_collection_sync_status") in {"pending", "conflict"})
+        if st.button("Add program", disabled=disabled, key="save_program_add"):
+            item = items[picked]
+            member = {"pe_number": program["pe_number"], "agency": program["agency"]}
+            if member in item["members"]:
+                st.info("This program is already in that collection.")
+            else:
+                try:
+                    updated = portfolios.save_collection(
+                        workspace, collection_id=picked, name=item["name"], kind=item["kind"],
+                        settings=item["settings"], notes=item["notes"], members=[*item["members"], member],
+                    )
+                    _queue_collection_save(updated, selected=picked)
+                except ValueError as exc:
+                    st.error(str(exc))
+
+
 @st.cache_data(ttl=3600, show_spinner=False)
 def congressional_year_bounds() -> tuple[int, int]:
     """First and last fiscal year with a stored committee action."""
@@ -1111,6 +1367,7 @@ with tab_trends:
 
 # ═══════════════════════════════ Program Finder ══════════════════════════════
 with tab_finder:
+    render_saved_collections()
     with st.expander("Ask the justification books", expanded=False):
         st.caption(
             "Searches the R-2 narrative text locally (free). The AI answer "
@@ -1356,6 +1613,7 @@ with tab_finder:
                 )
 
             # ═══ Program profile ═══
+            render_save_program(sel)
             profile_definitions = [
                 ("funding", "Funding"),
                 ("plans", "Justification"),

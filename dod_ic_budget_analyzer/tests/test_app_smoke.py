@@ -253,6 +253,50 @@ def test_no_parenthetical_qualifiers_in_labels() -> None:
     assert "(inference)" not in source
 
 
+def test_collections_create_edit_clone_and_restore_across_sessions(monkeypatch) -> None:
+    """Exercise forms with the browser-storage transport replaced at its boundary."""
+    saved = {"payload": None}
+
+    def register(*args, **kwargs):
+        def render(*, data, **mount_kwargs):
+            if data["action"] == "save":
+                saved["payload"] = data["payload"]
+                status = "saved"
+            else:
+                status = "loaded"
+            return {"response": {"id": data["id"], "status": status,
+                                 "payload": saved["payload"]}}
+        return render
+
+    monkeypatch.setattr(st.components.v2, "component", register)
+    st.cache_resource.clear()
+    app_path = Path(__file__).parents[1] / "app.py"
+    try:
+        app = AppTest.from_file(str(app_path), default_timeout=30)
+        app.query_params["tab"] = "finder"
+        app.run()
+        assert app.session_state["_collections_ready"]
+        app.text_input(key="new_collection_name").input("Leadership")
+        next(b for b in app.button if b.label == "Create collection").click().run()
+        assert not app.exception
+        assert len(app.session_state["_collection_workspace"]["collections"]) == 1
+        members = next(m for m in app.multiselect if m.label == "Programs in this collection")
+        members.set_value([("0601102A", "Army"), ("0602702E", "Defense-Wide")])
+        next(b for b in app.button if b.label == "Save collection").click().run()
+        assert not app.exception
+        assert len(app.session_state["_collection_workspace"]["collections"][0]["members"]) == 2
+        next(b for b in app.button if b.label == "Create watchlist from portfolio").click().run()
+        assert not app.exception
+        items = app.session_state["_collection_workspace"]["collections"]
+        assert [i["kind"] for i in items] == ["portfolio", "watchlist"]
+        restored = AppTest.from_file(str(app_path), default_timeout=30).run()
+        assert not restored.exception
+        assert len(restored.session_state["_collection_workspace"]["collections"]) == 2
+        assert _main_tab_labels(restored) == MAIN_TAB_LABELS
+    finally:
+        st.cache_resource.clear()
+
+
 def test_configured_demo_allowlist_fails_closed_for_anonymous_user(
     monkeypatch,
 ) -> None:

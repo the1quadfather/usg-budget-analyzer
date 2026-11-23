@@ -37,7 +37,15 @@ programs share a name (joint programs usually do).
   and R-1 dollar basis. Tables provide CSV/XLSX downloads with provenance.
 - **Changes between submissions** compares PB vintages and links events to
   program profiles. A command-line exporter writes JSON; scheduled alerts,
-  email delivery, and saved portfolios are not implemented.
+  and email delivery are not implemented.
+- **Portfolios & watchlists**, in Programs, saves named collections, notes,
+  comparison years, dollar basis, and materiality rules in this browser.
+  Save from a profile or select up to 100 PE/component pairs. Watchlists compare
+  discretionary annual budget-year requests; both dollar and percentage limits
+  must be met, with separate flags for presence changes. Missing is not zero or
+  evidence of cancellation. Download a JSON backup to restore on another device;
+  clearing browser data removes local saves. This is not an account-based sync
+  service or a scheduled notification system.
 - **Procurement transition** proposes P-1 matches using narrative evidence,
   title similarity, and optional semantic matching. These are inferred leads,
   not an official RDT&E-to-procurement crosswalk.
@@ -454,7 +462,8 @@ dod_ic_budget_analyzer/
 
 See [ROADMAP.md](ROADMAP.md) for implemented capabilities, remaining limits,
 and proposed next steps: repeatable demo operations, safer change classifications,
-saved portfolios, briefing exports, and a measured management pilot. P-1 ingest,
+briefing exports, shared portfolio workflows, and a measured management pilot. Saved
+browser portfolios and watchlists are implemented. P-1 ingest,
 lineage, reconciliation, cited retrieval, JSON change export, and the release
 builder are already implemented; extending their coverage and operating them
 reliably is distinct from building them for the first time.

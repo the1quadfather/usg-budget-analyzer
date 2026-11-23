@@ -1,6 +1,6 @@
 # DoD Budget Explorer — roadmap
 
-Updated 2026-11-21 against the code and bundled database. This replaces the
+Updated 2026-11-22 against the code and bundled database. This replaces the
 2026-09-08 implementation plan, much of which has since shipped. Historical
 specifications remain in `CODEX_TASKS.md` and `CODEX_HANDOFF.md`; their older
 claims about missing features and test counts are not current product status.
@@ -13,7 +13,8 @@ inferences, or a verified hosted deployment.
 
 | Capability | Implementation | Remaining limit |
 |---|---|---|
-| Shareable views | `app.py` query-state helpers | No saved portfolios or immutable briefing snapshots |
+| Shareable views | `app.py` query-state helpers | Links restore views; they do not share private collection notes |
+| Saved portfolios and watchlists | `analysis/portfolios.py`, Programs, browser storage | Private to this browser; JSON backup/restore, no account sync or scheduled delivery |
 | CSV/XLSX exports and provenance | `analysis/provenance.py`, table downloads | No integrated PDF/PowerPoint briefing workflow |
 | Constant FY2025 dollars and PB vintage labels | `analysis/deflators.py`, funding views | RDT&E deflators apply to R-1 funding, not every monetary panel |
 | DD 1416 ingest and execution views | downloader, parser, ingest, `analysis/execution_view.py` | Budget-authority status, not obligations or outlays; latest shipped report is 2026-03-31 |
@@ -94,11 +95,17 @@ what supports a conclusion, and what still needs confirmation.
 
 ## 3. Build a recurring portfolio workflow
 
-Proposed work, not implemented:
+Implemented: named portfolios and watchlists with exact PE/component membership,
+analyst notes, saved PB cycles and dollar basis, and JSON backup/restore. Annual
+discretionary BY requests are compared on the same basis. A comparable movement
+must meet both dollar and percentage limits; presence changes have a separate
+setting. Missing observations stay absent and do not establish cancellation.
+Saving stays in the browser, outside the shared budget database; an older tab
+cannot overwrite a newer save without an explicit restore.
 
-- Saved program portfolios grouped by technology, customer, or business unit.
-- Side-by-side comparisons with explicit years, dollar basis, and funding stage.
-- Watchlists with configurable dollar and percentage materiality thresholds.
+Remaining work:
+
+- Account-based sharing and cross-device sync when an access model is agreed.
 - Reviewed changes since the last briefing. Scheduled delivery is separate from
   the existing JSON exporter.
 - Versioned snapshots preserving the data and selections behind a briefing.
