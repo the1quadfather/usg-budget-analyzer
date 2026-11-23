@@ -15,7 +15,8 @@ inferences, or a verified hosted deployment.
 |---|---|---|
 | Shareable views | `app.py` query-state helpers | Links restore views; they do not share private collection notes |
 | Saved portfolios and watchlists | `analysis/portfolios.py`, Programs, browser storage | Private to this browser; JSON backup/restore, no account sync or scheduled delivery |
-| CSV/XLSX exports and provenance | `analysis/provenance.py`, table downloads | No integrated PDF/PowerPoint briefing workflow |
+| CSV/XLSX exports and provenance | `analysis/provenance.py`, table downloads | Tables export separately from the executive briefing |
+| Executive briefing PDF | `analysis/executive_briefing.py`, saved collections | Annual discretionary request comparison; no editable PowerPoint, review approval, or scheduled delivery |
 | Constant FY2025 dollars and PB vintage labels | `analysis/deflators.py`, funding views | RDT&E deflators apply to R-1 funding, not every monetary panel |
 | DD 1416 ingest and execution views | downloader, parser, ingest, `analysis/execution_view.py` | Budget-authority status, not obligations or outlays; latest shipped report is 2026-03-31 |
 | Regression tests and AI governance checks | `tests/`, `.github/workflows/ci.yml` | Prepare model weights before offline retrieval tests |
@@ -115,10 +116,19 @@ findings, and reproduce the prior briefing without rebuilding searches.
 
 ## 4. Deliver briefing outputs and run a management pilot
 
-Extend current CSV/XLSX exports into a concise PDF or PowerPoint brief with
-charts, analyst commentary, citations, limitations, and an as-of date. Keep
-source-backed material distinguishable from optional AI interpretation and
-preserve per-user grounded-result boundaries.
+Implemented: a PDF export of a saved portfolio or watchlist, with an executive
+overview, component chart, complete paginated program table, analyst commentary,
+UTC generation timestamp, bundled archive identifier, source URLs and method.
+Covered totals disclose their observation counts; comparable-cohort changes
+exclude missing pairs. Requests remain distinct from enacted appropriations,
+obligations and outlays. The download is per-session and uses no AI calls or new
+dependencies. Unsupported font characters produce a visible error rather than
+silently dropping text.
+
+Remaining: editable PowerPoint, analyst approval/review history, scheduled
+delivery, and versioned underlying data snapshots that can recreate a previous
+briefing. A downloaded PDF fixes the displayed figures; a collection JSON backup
+alone does not preserve an older database.
 
 Proposed pilot: 30 days, 3–5 analysts, and 10–20 organization-relevant programs.
 Agree on representative questions and a manual baseline before measuring time

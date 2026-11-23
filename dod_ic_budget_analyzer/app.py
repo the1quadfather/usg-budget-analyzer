@@ -42,7 +42,7 @@ from analysis.provenance import (
 )
 from analysis.trend_tracker import LINEAGE_CONFIDENCE_THRESHOLD, TrendTracker
 from analysis.text_render import escape_dollars
-from analysis import narrative_qa, portfolios, primer
+from analysis import executive_briefing, narrative_qa, portfolios, primer
 from analysis.user_identity import streamlit_user_id
 
 # --- Configuration & State Setup ---
@@ -787,6 +787,47 @@ def _collection_table(snapshot, *, flagged_only: bool, key: str) -> None:
     render_table_downloads(table, name="collection_requests", key=key, sources=snapshot.sources)
 
 
+@st.cache_data(show_spinner=False)
+def _briefing_archive_id(size: int, modified_ns: int) -> str:
+    # Only the public, shipped archive identifier is shared across sessions.
+    path = Path(__file__).parent / "data" / "processed" / "usg_budgets.db.gz"
+    with path.open("rb") as stream:
+        return hashlib.file_digest(stream, "sha256").hexdigest()
+
+
+def render_executive_briefing(snapshot) -> None:
+    with st.expander("Executive briefing PDF"):
+        st.caption("Export the saved comparison and notes, all selected programs, watch rules, and source links. Analyst commentary is labelled separately. No paid AI is used.")
+        item = snapshot.collection
+        prefix = f"brief::{item['id']}"
+        title = st.text_input("Briefing title", value=item["name"], max_chars=120, key=f"title::{prefix}")
+        audience = st.text_input("Prepared for (optional)", max_chars=120, key=f"audience::{prefix}")
+        decision = st.text_area("Decision or discussion requested (optional)", max_chars=1500, key=f"decision::{prefix}")
+        archive = Path(__file__).parent / "data" / "processed" / "usg_budgets.db.gz"
+        info = archive.stat()
+        archive_id = _briefing_archive_id(info.st_size, info.st_mtime_ns)
+        fingerprint = hashlib.sha256(
+            repr((item, snapshot.rows.to_json(), snapshot.sources,
+                  title, audience, decision, archive_id)).encode("utf-8")
+        ).hexdigest()
+        if st.button("Generate briefing PDF", key=f"generate::{prefix}"):
+            try:
+                with st.spinner("Preparing the executive briefing..."):
+                    payload = executive_briefing.export_pdf(
+                        snapshot, title=title, prepared_for=audience, decision=decision,
+                        archive_sha256=archive_id,
+                    )
+                st.session_state["_executive_briefing"] = {"fingerprint": fingerprint, "payload": payload}
+            except ValueError as exc:
+                st.error(str(exc))
+        generated = st.session_state.get("_executive_briefing", {})
+        if generated.get("fingerprint") == fingerprint:
+            st.download_button("Download executive briefing PDF", generated["payload"],
+                               file_name="executive-budget-briefing.pdf", mime="application/pdf",
+                               key=f"download::{prefix}")
+            st.caption("This is a fixed snapshot of the saved view. Download a saved-work backup separately to reopen the collection.")
+
+
 def render_saved_collections() -> None:
     _collection_store_sync()
     workspace = st.session_state["_collection_workspace"]
@@ -902,6 +943,7 @@ def render_saved_collections() -> None:
                 else:
                     _collection_table(snapshot, flagged_only=False, key=f"portfolio::{picked}")
                 render_provenance(snapshot.sources)
+                render_executive_briefing(snapshot)
             else:
                 st.info("Add programs above or save a program from its profile.")
             if item["kind"] == "portfolio" and st.button("Create watchlist from portfolio", disabled=not editable):

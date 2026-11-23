@@ -276,6 +276,9 @@ def test_collections_create_edit_clone_and_restore_across_sessions(monkeypatch) 
         app.query_params["tab"] = "finder"
         app.run()
         assert app.session_state["_collections_ready"]
+        next(b for b in app.button if b.label == "Restore backup").click().run()
+        assert any("confirm replacement" in e.value for e in app.error)
+        assert not app.session_state["_collection_workspace"]["collections"]
         app.text_input(key="new_collection_name").input("Leadership")
         next(b for b in app.button if b.label == "Create collection").click().run()
         assert not app.exception
@@ -289,9 +292,28 @@ def test_collections_create_edit_clone_and_restore_across_sessions(monkeypatch) 
         assert not app.exception
         items = app.session_state["_collection_workspace"]["collections"]
         assert [i["kind"] for i in items] == ["portfolio", "watchlist"]
+        next(b for b in app.button if b.label == "Generate briefing PDF").click().run()
+        assert not app.exception
+        assert app.session_state["_executive_briefing"]["payload"].startswith(b"%PDF-")
+        assert any(b.label == "Download executive briefing PDF" for b in app.get("download_button"))
+        # Editing briefing fields invalidates the old download until regenerated.
+        next(t for t in app.text_area if t.label == "Decision or discussion requested (optional)").input("Review scope.").run()
+        assert not any(b.label == "Download executive briefing PDF" for b in app.get("download_button"))
+        from io import BytesIO
+        import json
+        backup = json.loads(saved["payload"])
+        backup["collections"][0]["name"] = "Restored leadership"
+        uploaded = BytesIO(json.dumps(backup).encode())
+        uploaded.size = len(uploaded.getvalue())
+        monkeypatch.setattr(st, "file_uploader", lambda *args, **kwargs: uploaded)
+        app.checkbox(key="collection_replace").check()
+        next(b for b in app.button if b.label == "Restore backup").click().run()
+        assert not app.exception
+        assert app.session_state["_collection_workspace"]["collections"][0]["name"] == "Restored leadership"
         restored = AppTest.from_file(str(app_path), default_timeout=30).run()
         assert not restored.exception
         assert len(restored.session_state["_collection_workspace"]["collections"]) == 2
+        assert restored.session_state["_collection_workspace"]["collections"][0]["name"] == "Restored leadership"
         assert _main_tab_labels(restored) == MAIN_TAB_LABELS
     finally:
         st.cache_resource.clear()
